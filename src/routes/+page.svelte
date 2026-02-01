@@ -69,11 +69,16 @@
 			const grassSideMat = new THREE.MeshStandardMaterial({ map: grassSideTex, roughness: 0.95 });
 			const dirtMat = new THREE.MeshStandardMaterial({ map: dirtTex, roughness: 1 });
 			const stoneMat = new THREE.MeshStandardMaterial({ map: stoneTex, roughness: 1 });
+			const tntMat = new THREE.MeshStandardMaterial({ map: stoneTex, color: 0xe04b35, roughness: 0.85 });
+			const particleMat = new THREE.MeshStandardMaterial({ color: 0xffc06b, roughness: 0.6 });
 
 			const blockGeo = new THREE.BoxGeometry(1, 1, 1);
+			const fallingBlockGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+			const particleGeo = new THREE.BoxGeometry(0.08, 0.08, 0.08);
 			const grassMats = [grassSideMat, grassSideMat, grassTopMat, dirtMat, grassSideMat, grassSideMat];
 			const dirtMats = [dirtMat, dirtMat, dirtMat, dirtMat, dirtMat, dirtMat];
 			const stoneMats = [stoneMat, stoneMat, stoneMat, stoneMat, stoneMat, stoneMat];
+			const tntMats = [tntMat, tntMat, tntMat, tntMat, tntMat, tntMat];
 
 			const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
 
@@ -161,7 +166,21 @@
 				return heights[ix][iz];
 			};
 
-			player.position.set(0, getHeightAt(0, 0), 0);
+			const startHeight = getHeightAt(0, 0);
+			player.position.set(0, startHeight, 0);
+			const playerBody = world.createRigidBody(
+				RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, startHeight, 0)
+			);
+			const playerColliderDesc = RAPIER.ColliderDesc.cuboid(0.35, 0.95, 0.35);
+			playerColliderDesc.setTranslation(0, 0.95, 0);
+			playerColliderDesc.setFriction(0.2);
+			const playerCollider = world.createCollider(playerColliderDesc, playerBody);
+			const controller = world.createCharacterController(0.05);
+			controller.enableAutostep(0.6, 0.2, true);
+			controller.enableSnapToGround(0.35);
+			controller.setApplyImpulsesToDynamicBodies(true);
+			controller.setMaxSlopeClimbAngle(Math.PI / 4);
+			controller.setMinSlopeSlideAngle(Math.PI / 3);
 			scene.add(player);
 
 			const input = {
@@ -395,25 +414,89 @@
 			renderer.domElement.addEventListener('pointerup', handleLookUp);
 			renderer.domElement.addEventListener('pointercancel', handleLookUp);
 
-			const fallingBlocks: Array<{ mesh: THREE.Mesh; body: RAPIER.RigidBody }> = [];
+			type FallingBlock = {
+				mesh: THREE.Mesh;
+				body: RAPIER.RigidBody;
+				collider: RAPIER.Collider;
+				isTnt: boolean;
+				removed: boolean;
+			};
+
+			type ExplosionParticle = {
+				mesh: THREE.Mesh;
+				velocity: THREE.Vector3;
+				life: number;
+			};
+
+			const fallingBlocks: FallingBlock[] = [];
+			const blockByCollider = new Map<number, FallingBlock>();
+			const particles: ExplosionParticle[] = [];
 
 			const spawnFallingBlock = () => {
 				const spawnX = THREE.MathUtils.randFloat(-half + 2, half - 2);
 				const spawnZ = THREE.MathUtils.randFloat(-half + 2, half - 2);
 				const spawnY = THREE.MathUtils.randFloat(10, 16);
-				const block = new THREE.Mesh(blockGeo, stoneMats);
+				const isTnt = Math.random() < 0.28;
+				const block = new THREE.Mesh(fallingBlockGeo, isTnt ? tntMats : stoneMats);
 				block.position.set(spawnX, spawnY, spawnZ);
 				cameraOccluders.push(block);
 				scene.add(block);
 
 				const bodyDesc = RAPIER.RigidBodyDesc.dynamic().setTranslation(spawnX, spawnY, spawnZ);
 				const bodyInstance = world.createRigidBody(bodyDesc);
-				const colliderDesc = RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.5);
+				const colliderDesc = RAPIER.ColliderDesc.cuboid(0.25, 0.25, 0.25);
 				colliderDesc.setFriction(0.9);
 				colliderDesc.setRestitution(0.1);
-				world.createCollider(colliderDesc, bodyInstance);
+				const collider = world.createCollider(colliderDesc, bodyInstance);
 
-				fallingBlocks.push({ mesh: block, body: bodyInstance });
+				const fallingBlock: FallingBlock = {
+					mesh: block,
+					body: bodyInstance,
+					collider,
+					isTnt,
+					removed: false
+				};
+				blockByCollider.set(collider.handle, fallingBlock);
+				fallingBlocks.push(fallingBlock);
+			};
+
+			const spawnExplosion = (position: THREE.Vector3) => {
+				const count = 22;
+				for (let i = 0; i < count; i += 1) {
+					const mesh = new THREE.Mesh(particleGeo, particleMat);
+					mesh.position.copy(position);
+					const velocity = new THREE.Vector3(
+						THREE.MathUtils.randFloatSpread(1.2),
+						THREE.MathUtils.randFloat(0.6, 1.6),
+						THREE.MathUtils.randFloatSpread(1.2)
+					)
+						.normalize()
+						.multiplyScalar(THREE.MathUtils.randFloat(2.2, 4.2));
+					particles.push({ mesh, velocity, life: THREE.MathUtils.randFloat(0.5, 0.9) });
+					scene.add(mesh);
+				}
+			};
+
+			const removeBlock = (block: FallingBlock) => {
+				if (block.removed) {
+					return;
+				}
+				block.removed = true;
+				scene.remove(block.mesh);
+				const occluderIndex = cameraOccluders.indexOf(block.mesh);
+				if (occluderIndex >= 0) {
+					cameraOccluders.splice(occluderIndex, 1);
+				}
+				blockByCollider.delete(block.collider.handle);
+				world.removeRigidBody(block.body);
+			};
+
+			const detonateBlock = (block: FallingBlock) => {
+				if (block.removed) {
+					return;
+				}
+				spawnExplosion(block.mesh.position);
+				removeBlock(block);
 			};
 
 			const forwardBase = new THREE.Vector3(0, 0, -1);
@@ -450,34 +533,41 @@
 				player.rotation.y += turnInput * 1.6 * delta + pointerState.lookDelta;
 				pointerState.lookDelta = 0;
 
-				tempVec.copy(forwardBase).applyQuaternion(player.quaternion);
-				player.position.addScaledVector(tempVec, 4.2 * moveInput * delta);
-
-				const clampLimit = half - 2;
-				player.position.x = THREE.MathUtils.clamp(player.position.x, -clampLimit, clampLimit);
-				player.position.z = THREE.MathUtils.clamp(player.position.z, -clampLimit, clampLimit);
-
-				const targetHeight = getHeightAt(player.position.x, player.position.z);
-				if (player.position.y <= targetHeight + 0.02 && verticalVelocity <= 0) {
-					grounded = true;
-					player.position.y = targetHeight;
+				if (grounded && verticalVelocity < 0) {
 					verticalVelocity = 0;
-				} else {
-					grounded = false;
 				}
-
 				if (input.jump && grounded) {
 					verticalVelocity = 7.2;
 					grounded = false;
 					input.jump = false;
 				}
-
 				verticalVelocity += gravity * delta;
-				player.position.y += verticalVelocity * delta;
-				if (player.position.y < targetHeight) {
-					player.position.y = targetHeight;
+
+				tempVec.copy(forwardBase).applyQuaternion(player.quaternion);
+				const desiredMovement = tempVec2
+					.copy(tempVec)
+					.multiplyScalar(4.2 * moveInput * delta);
+				desiredMovement.y = verticalVelocity * delta;
+
+				controller.computeColliderMovement(playerCollider, desiredMovement);
+				const actualMovement = controller.computedMovement();
+				const currentPos = playerBody.translation();
+				const nextPos = {
+					x: currentPos.x + actualMovement.x,
+					y: currentPos.y + actualMovement.y,
+					z: currentPos.z + actualMovement.z
+				};
+
+				const clampLimit = half - 2;
+				nextPos.x = THREE.MathUtils.clamp(nextPos.x, -clampLimit, clampLimit);
+				nextPos.z = THREE.MathUtils.clamp(nextPos.z, -clampLimit, clampLimit);
+
+				playerBody.setNextKinematicTranslation(nextPos);
+				player.position.set(nextPos.x, nextPos.y, nextPos.z);
+
+				grounded = controller.computedGrounded();
+				if (grounded && verticalVelocity < 0) {
 					verticalVelocity = 0;
-					grounded = true;
 				}
 
 				const movementStrength = Math.min(Math.abs(moveInput), 1);
@@ -525,19 +615,40 @@
 				world.timestep = delta;
 				world.step();
 
+				const tntHits = new Set<FallingBlock>();
+				world.intersectionPairsWith(playerCollider, (collider) => {
+					const block = blockByCollider.get(collider.handle);
+					if (block && block.isTnt && !block.removed) {
+						tntHits.add(block);
+					}
+				});
+				for (const block of tntHits) {
+					detonateBlock(block);
+				}
+
 				for (let i = fallingBlocks.length - 1; i >= 0; i -= 1) {
 					const block = fallingBlocks[i];
+					if (block.removed) {
+						fallingBlocks.splice(i, 1);
+						continue;
+					}
 					const position = block.body.translation();
 					block.mesh.position.set(position.x, position.y, position.z);
 
 					if (position.y < -10) {
-						scene.remove(block.mesh);
-						const occluderIndex = cameraOccluders.indexOf(block.mesh);
-						if (occluderIndex >= 0) {
-							cameraOccluders.splice(occluderIndex, 1);
-						}
-						world.removeRigidBody(block.body);
+						removeBlock(block);
 						fallingBlocks.splice(i, 1);
+					}
+				}
+
+				for (let i = particles.length - 1; i >= 0; i -= 1) {
+					const particle = particles[i];
+					particle.velocity.y += gravity * 0.35 * delta;
+					particle.mesh.position.addScaledVector(particle.velocity, delta);
+					particle.life -= delta;
+					if (particle.life <= 0) {
+						scene.remove(particle.mesh);
+						particles.splice(i, 1);
 					}
 				}
 
@@ -582,12 +693,16 @@
 				container?.removeChild(renderer.domElement);
 
 				blockGeo.dispose();
+				fallingBlockGeo.dispose();
+				particleGeo.dispose();
 				bodyMat.dispose();
 				limbMat.dispose();
 				grassTopMat.dispose();
 				grassSideMat.dispose();
 				dirtMat.dispose();
 				stoneMat.dispose();
+				tntMat.dispose();
+				particleMat.dispose();
 				grassTopTex.dispose();
 				grassSideTex.dispose();
 				dirtTex.dispose();
@@ -608,6 +723,11 @@
 					scene.remove(block.mesh);
 					world.removeRigidBody(block.body);
 				}
+				for (const particle of particles) {
+					scene.remove(particle.mesh);
+				}
+				world.removeRigidBody(playerBody);
+				world.removeCharacterController(controller);
 
 				renderer.dispose();
 			};
