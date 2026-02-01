@@ -540,18 +540,18 @@
 			};
 
 			const spawnExplosion = (position: THREE.Vector3) => {
-				const count = 38;
+				const count = 120;
 				for (let i = 0; i < count; i += 1) {
 					const mesh = new THREE.Mesh(particleGeo, particleMat);
 					mesh.position.copy(position);
 					const velocity = new THREE.Vector3(
-						THREE.MathUtils.randFloatSpread(1.5),
-						THREE.MathUtils.randFloat(0.8, 2.0),
-						THREE.MathUtils.randFloatSpread(1.5)
+						THREE.MathUtils.randFloatSpread(2.2),
+						THREE.MathUtils.randFloat(1.2, 3.0),
+						THREE.MathUtils.randFloatSpread(2.2)
 					)
 						.normalize()
-						.multiplyScalar(THREE.MathUtils.randFloat(2.6, 5.2));
-					particles.push({ mesh, velocity, life: THREE.MathUtils.randFloat(0.6, 1.1) });
+						.multiplyScalar(THREE.MathUtils.randFloat(3.6, 7.2));
+					particles.push({ mesh, velocity, life: THREE.MathUtils.randFloat(0.9, 1.6) });
 					scene.add(mesh);
 				}
 			};
@@ -636,6 +636,31 @@
 				desiredMovement.y = verticalVelocity * delta;
 
 				controller.computeColliderMovement(playerCollider, desiredMovement);
+				const tntHits = new Set<FallingBlock>();
+				const pushHits = new Set<FallingBlock>();
+				const collisionCount = controller.numComputedCollisions();
+				for (let i = 0; i < collisionCount; i += 1) {
+					const collision = controller.computedCollision(i);
+					const collider = collision?.collider;
+					if (!collider) {
+						continue;
+					}
+					const block = blockByCollider.get(collider.handle);
+					if (!block || block.removed) {
+						continue;
+					}
+					console.log('[cc-collision]', {
+						handle: collider.handle,
+						isTnt: block.isTnt,
+						normal: collision?.normal1,
+						pos: block.mesh.position.toArray()
+					});
+					if (block.isTnt) {
+						tntHits.add(block);
+					} else {
+						pushHits.add(block);
+					}
+				}
 				const actualMovement = controller.computedMovement();
 				const currentPos = playerBody.translation();
 				const nextPos = {
@@ -701,19 +726,6 @@
 
 				world.timestep = delta;
 				world.step();
-
-				const tntHits = new Set<FallingBlock>();
-				const pushHits = new Set<FallingBlock>();
-				world.intersectionPairsWith(playerCollider, (collider) => {
-					const block = blockByCollider.get(collider.handle);
-					if (block && !block.removed) {
-						if (block.isTnt) {
-							tntHits.add(block);
-						} else {
-							pushHits.add(block);
-						}
-					}
-				});
 				for (const block of tntHits) {
 					detonateBlock(block);
 				}
@@ -728,9 +740,9 @@
 					if (pushImpulse.lengthSq() < 0.0001) {
 						continue;
 					}
-					pushImpulse.normalize().multiplyScalar(0.6);
+					pushImpulse.normalize().multiplyScalar(0.25);
 					block.body.applyImpulse(
-						{ x: pushImpulse.x, y: 0.06, z: pushImpulse.z },
+						{ x: pushImpulse.x, y: 0.02, z: pushImpulse.z },
 						true
 					);
 				}
