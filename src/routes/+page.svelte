@@ -29,8 +29,6 @@
 			const renderer = new THREE.WebGLRenderer({ antialias: true });
 			renderer.setPixelRatio(window.devicePixelRatio);
 			renderer.outputColorSpace = THREE.SRGBColorSpace;
-			renderer.domElement.tabIndex = 0;
-			renderer.domElement.setAttribute('aria-label', 'Game view');
 			container.appendChild(renderer.domElement);
 
 			const camera = new THREE.PerspectiveCamera(65, 1, 0.1, 300);
@@ -236,18 +234,10 @@
 				lastMouseX: 0
 			};
 
-			const focusContainer = () => {
-				const focusTarget = renderer.domElement;
-				if (document.activeElement !== focusTarget) {
-					focusTarget.focus({ preventScroll: true });
-				}
-			};
-
 			const handleMouseDown = (event: PointerEvent) => {
 				if (event.pointerType !== 'mouse' || event.button !== 0) {
 					return;
 				}
-				focusContainer();
 				pointerState.mouseDown = true;
 				pointerState.lastMouseX = event.clientX;
 				if (event.target instanceof HTMLElement) {
@@ -308,7 +298,6 @@
 				if (event.pointerType != 'touch' || !joystickEl) {
 					return;
 				}
-				focusContainer();
 				joystickState.pointerId = event.pointerId;
 				joystickEl.setPointerCapture(event.pointerId);
 				updateJoystickBounds();
@@ -342,22 +331,10 @@
 				joystickEl?.releasePointerCapture(event.pointerId);
 			};
 
-			const isLookBlocked = (event: PointerEvent) => {
-				if (!(event.target instanceof HTMLElement)) {
-					return false;
-				}
-				return Boolean(
-					event.target.closest(
-						'input, textarea, select, button, a, [contenteditable], .touch-pad, .hud'
-					)
-				);
-			};
-
 			const handleJumpDown = (event: PointerEvent) => {
 				if (event.pointerType === 'mouse') {
 					return;
 				}
-				focusContainer();
 				input.jump = true;
 				event.preventDefault();
 				event.stopPropagation();
@@ -375,10 +352,9 @@
 				if (event.pointerType === 'mouse') {
 					return;
 				}
-				if (isLookBlocked(event)) {
+				if (event.target instanceof HTMLElement && event.target.closest('.touch-pad')) {
 					return;
 				}
-				focusContainer();
 				lookState.pointerId = event.pointerId;
 				lookState.lastX = event.clientX;
 				if (event.target instanceof HTMLElement) {
@@ -705,10 +681,6 @@
 		width: 100%;
 		height: 100%;
 		cursor: grab;
-	}
-
-	.scene :global(canvas:focus) {
-		outline: none;
 	}
 
 	.scene :global(canvas:active) {
