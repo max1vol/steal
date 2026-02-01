@@ -33,9 +33,15 @@
 
 			const camera = new THREE.PerspectiveCamera(65, 1, 0.1, 300);
 			const cameraRig = new THREE.Group();
-			const cameraOffset = new THREE.Vector3(0, 4.6, 7.5);
+			cameraRig.rotation.order = 'YXZ';
+			const baseCameraOffset = new THREE.Vector3(0, 4.6, 7.5);
+			const cameraRadius = baseCameraOffset.length();
+			const cameraOffset = new THREE.Vector3(0, 0, cameraRadius);
 			const defaultCameraDistance = cameraOffset.length();
 			let cameraDistance = defaultCameraDistance;
+			let cameraPitch = Math.atan2(baseCameraOffset.y, baseCameraOffset.z);
+			const minPitch = 0.15;
+			const maxPitch = 1.2;
 			const collisionDampIn = 8;
 			const collisionDampOut = 3.5;
 			camera.position.copy(cameraOffset);
@@ -248,9 +254,11 @@
 
 			const moveAxis = new THREE.Vector2();
 			const pointerState = {
-				lookDelta: 0,
+				lookYaw: 0,
+				lookPitch: 0,
 				mouseDown: false,
-				lastMouseX: 0
+				lastMouseX: 0,
+				lastMouseY: 0
 			};
 
 			const handleMouseDown = (event: PointerEvent) => {
@@ -259,6 +267,7 @@
 				}
 				pointerState.mouseDown = true;
 				pointerState.lastMouseX = event.clientX;
+				pointerState.lastMouseY = event.clientY;
 				if (event.target instanceof HTMLElement) {
 					event.target.setPointerCapture(event.pointerId);
 				}
@@ -269,8 +278,11 @@
 					return;
 				}
 				const deltaX = event.clientX - pointerState.lastMouseX;
+				const deltaY = event.clientY - pointerState.lastMouseY;
 				pointerState.lastMouseX = event.clientX;
-				pointerState.lookDelta += deltaX * 0.003;
+				pointerState.lastMouseY = event.clientY;
+				pointerState.lookYaw += deltaX * 0.003;
+				pointerState.lookPitch += -deltaY * 0.003;
 			};
 
 			const handleMouseUp = (event: PointerEvent) => {
@@ -293,7 +305,8 @@
 
 			const lookState = {
 				pointerId: null as number | null,
-				lastX: 0
+				lastX: 0,
+				lastY: 0
 			};
 
 			const updateJoystickBounds = () => {
@@ -376,6 +389,7 @@
 				}
 				lookState.pointerId = event.pointerId;
 				lookState.lastX = event.clientX;
+				lookState.lastY = event.clientY;
 				if (event.target instanceof HTMLElement) {
 					event.target.setPointerCapture(event.pointerId);
 				}
@@ -387,8 +401,11 @@
 					return;
 				}
 				const dx = event.clientX - lookState.lastX;
+				const dy = event.clientY - lookState.lastY;
 				lookState.lastX = event.clientX;
-				pointerState.lookDelta += dx * 0.004;
+				lookState.lastY = event.clientY;
+				pointerState.lookYaw += dx * 0.004;
+				pointerState.lookPitch += -dy * 0.004;
 				event.preventDefault();
 			};
 
@@ -530,8 +547,14 @@
 				}
 
 				moveInput = THREE.MathUtils.clamp(moveInput, -0.6, 1.2);
-				player.rotation.y += turnInput * 1.6 * delta + pointerState.lookDelta;
-				pointerState.lookDelta = 0;
+				player.rotation.y += turnInput * 1.6 * delta + pointerState.lookYaw;
+				pointerState.lookYaw = 0;
+				cameraPitch = THREE.MathUtils.clamp(
+					cameraPitch + pointerState.lookPitch,
+					minPitch,
+					maxPitch
+				);
+				pointerState.lookPitch = 0;
 
 				if (grounded && verticalVelocity < 0) {
 					verticalVelocity = 0;
@@ -581,6 +604,7 @@
 
 				cameraRig.position.copy(player.position);
 				cameraRig.rotation.y = player.rotation.y;
+				cameraRig.rotation.x = cameraPitch;
 				cameraRig.updateMatrixWorld();
 
 				const target = tempVec.copy(player.position).add(headOffset);
