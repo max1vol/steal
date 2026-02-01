@@ -42,7 +42,7 @@
 			const maxPitch = 0.6;
 			const collisionDampIn = 8;
 			const collisionDampOut = 3.5;
-			camera.position.copy(cameraOffset);
+			camera.position.copy(baseCameraOffset);
 			cameraRig.add(camera);
 			scene.add(cameraRig);
 
