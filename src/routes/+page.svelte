@@ -497,6 +497,7 @@
 				body: RAPIER.RigidBody;
 				collider: RAPIER.Collider;
 				isTnt: boolean;
+				detonationQueued: boolean;
 				removed: boolean;
 			};
 
@@ -506,10 +507,20 @@
 				life: number;
 			};
 
+			type PendingDetonation = {
+				block: FallingBlock;
+				time: number;
+				chainLevel: number;
+			};
+
 			const fallingBlocks: FallingBlock[] = [];
 			const blockByCollider = new Map<number, FallingBlock>();
 			const particles: ExplosionParticle[] = [];
 			const pushImpulse = new THREE.Vector3();
+			const pendingDetonations: PendingDetonation[] = [];
+			const explosionRadius = 4.5;
+			const explosionSpeed = 6.0;
+			const maxChainLevel = 4;
 
 			const spawnFallingBlock = () => {
 				const spawnX = THREE.MathUtils.randFloat(-half + 2, half - 2);
@@ -533,6 +544,7 @@
 					body: bodyInstance,
 					collider,
 					isTnt,
+					detonationQueued: false,
 					removed: false
 				};
 				blockByCollider.set(collider.handle, fallingBlock);
@@ -570,11 +582,34 @@
 				world.removeRigidBody(block.body);
 			};
 
-			const detonateBlock = (block: FallingBlock) => {
+			const scheduleChainDetonations = (origin: THREE.Vector3, chainLevel: number) => {
+				if (chainLevel >= maxChainLevel) {
+					return;
+				}
+				for (const block of fallingBlocks) {
+					if (!block.isTnt || block.removed || block.detonationQueued) {
+						continue;
+					}
+					const distance = origin.distanceTo(block.mesh.position);
+					if (distance > explosionRadius) {
+						continue;
+					}
+					block.detonationQueued = true;
+					const delay = Math.max(distance / explosionSpeed, 0.08);
+					pendingDetonations.push({
+						block,
+						time: delay,
+						chainLevel: chainLevel + 1
+					});
+				}
+			};
+
+			const detonateBlock = (block: FallingBlock, chainLevel = 0) => {
 				if (block.removed) {
 					return;
 				}
 				spawnExplosion(block.mesh.position);
+				scheduleChainDetonations(block.mesh.position, chainLevel);
 				removeBlock(block);
 			};
 
@@ -773,6 +808,18 @@
 					}
 				}
 
+				for (let i = pendingDetonations.length - 1; i >= 0; i -= 1) {
+					const pending = pendingDetonations[i];
+					pending.time -= delta;
+					if (pending.time > 0) {
+						continue;
+					}
+					pendingDetonations.splice(i, 1);
+					if (!pending.block.removed) {
+						detonateBlock(pending.block, pending.chainLevel);
+					}
+				}
+
 				renderer.render(scene, camera);
 				frame = requestAnimationFrame(tick);
 			};
@@ -852,6 +899,7 @@
 				for (const particle of particles) {
 					scene.remove(particle.mesh);
 				}
+				pendingDetonations.length = 0;
 				world.removeRigidBody(playerBody);
 				world.removeCharacterController(controller);
 
