@@ -35,13 +35,11 @@
 			const cameraRig = new THREE.Group();
 			cameraRig.rotation.order = 'YXZ';
 			const baseCameraOffset = new THREE.Vector3(0, 4.6, 7.5);
-			const cameraRadius = baseCameraOffset.length();
-			const cameraOffset = new THREE.Vector3(0, 0, cameraRadius);
-			const defaultCameraDistance = cameraOffset.length();
+			const defaultCameraDistance = baseCameraOffset.length();
 			let cameraDistance = defaultCameraDistance;
-			let cameraPitch = Math.atan2(baseCameraOffset.y, baseCameraOffset.z);
-			const minPitch = 0.15;
-			const maxPitch = 1.2;
+			let cameraPitch = 0;
+			const minPitch = -0.6;
+			const maxPitch = 0.6;
 			const collisionDampIn = 8;
 			const collisionDampOut = 3.5;
 			camera.position.copy(cameraOffset);
@@ -282,7 +280,7 @@
 				pointerState.lastMouseX = event.clientX;
 				pointerState.lastMouseY = event.clientY;
 				pointerState.lookYaw += deltaX * 0.003;
-				pointerState.lookPitch += -deltaY * 0.003;
+				pointerState.lookPitch += deltaY * 0.003;
 			};
 
 			const handleMouseUp = (event: PointerEvent) => {
@@ -405,7 +403,7 @@
 				lookState.lastX = event.clientX;
 				lookState.lastY = event.clientY;
 				pointerState.lookYaw += dx * 0.004;
-				pointerState.lookPitch += -dy * 0.004;
+				pointerState.lookPitch += dy * 0.004;
 				event.preventDefault();
 			};
 
@@ -517,6 +515,7 @@
 			};
 
 			const forwardBase = new THREE.Vector3(0, 0, -1);
+			const xAxis = new THREE.Vector3(1, 0, 0);
 			const headOffset = new THREE.Vector3(0, 1.6, 0);
 			const tempVec = new THREE.Vector3();
 			const tempVec2 = new THREE.Vector3();
@@ -604,11 +603,11 @@
 
 				cameraRig.position.copy(player.position);
 				cameraRig.rotation.y = player.rotation.y;
-				cameraRig.rotation.x = cameraPitch;
+				cameraRig.rotation.x = 0;
 				cameraRig.updateMatrixWorld();
 
 				const target = tempVec.copy(player.position).add(headOffset);
-				const desiredWorld = tempVec2.copy(cameraOffset);
+				const desiredWorld = tempVec2.copy(baseCameraOffset).applyAxisAngle(xAxis, cameraPitch);
 				cameraRig.localToWorld(desiredWorld);
 
 				const toCamera = tempVec3.copy(desiredWorld).sub(target);
