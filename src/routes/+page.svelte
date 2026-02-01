@@ -63,17 +63,63 @@
 				texture.wrapT = THREE.RepeatWrapping;
 				return texture;
 			};
+			const createCanvasTexture = (draw: (ctx: CanvasRenderingContext2D, size: number) => void) => {
+				const size = 64;
+				const canvas = document.createElement('canvas');
+				canvas.width = size;
+				canvas.height = size;
+				const ctx = canvas.getContext('2d');
+				if (ctx) {
+					ctx.imageSmoothingEnabled = false;
+					draw(ctx, size);
+				}
+				const texture = new THREE.CanvasTexture(canvas);
+				texture.colorSpace = THREE.SRGBColorSpace;
+				texture.magFilter = THREE.NearestFilter;
+				texture.minFilter = THREE.NearestMipMapNearestFilter;
+				texture.wrapS = THREE.RepeatWrapping;
+				texture.wrapT = THREE.RepeatWrapping;
+				return texture;
+			};
 
 			const grassTopTex = loadTexture('/textures/grass_top.png');
 			const grassSideTex = loadTexture('/textures/grass_side.png');
 			const dirtTex = loadTexture('/textures/dirt.png');
 			const stoneTex = loadTexture('/textures/stone.png');
+			const tntTopTex = createCanvasTexture((ctx, size) => {
+				ctx.fillStyle = '#c42d2d';
+				ctx.fillRect(0, 0, size, size);
+				ctx.fillStyle = '#f2e6d8';
+				ctx.fillRect(0, size * 0.35, size, size * 0.3);
+				ctx.fillStyle = '#111';
+				ctx.font = `bold ${Math.floor(size * 0.3)}px sans-serif`;
+				ctx.textAlign = 'center';
+				ctx.textBaseline = 'middle';
+				ctx.fillText('TNT', size / 2, size / 2);
+			});
+			const tntSideTex = createCanvasTexture((ctx, size) => {
+				ctx.fillStyle = '#b32727';
+				ctx.fillRect(0, 0, size, size);
+				ctx.fillStyle = '#f2e6d8';
+				ctx.fillRect(0, size * 0.4, size, size * 0.2);
+				ctx.fillStyle = '#111';
+				ctx.font = `bold ${Math.floor(size * 0.22)}px sans-serif`;
+				ctx.textAlign = 'center';
+				ctx.textBaseline = 'middle';
+				ctx.fillText('TNT', size / 2, size * 0.5);
+			});
+			const tntBottomTex = createCanvasTexture((ctx, size) => {
+				ctx.fillStyle = '#7a1e1e';
+				ctx.fillRect(0, 0, size, size);
+			});
 
 			const grassTopMat = new THREE.MeshStandardMaterial({ map: grassTopTex, roughness: 0.95 });
 			const grassSideMat = new THREE.MeshStandardMaterial({ map: grassSideTex, roughness: 0.95 });
 			const dirtMat = new THREE.MeshStandardMaterial({ map: dirtTex, roughness: 1 });
 			const stoneMat = new THREE.MeshStandardMaterial({ map: stoneTex, roughness: 1 });
-			const tntMat = new THREE.MeshStandardMaterial({ map: stoneTex, color: 0xe04b35, roughness: 0.85 });
+			const tntTopMat = new THREE.MeshStandardMaterial({ map: tntTopTex, roughness: 0.85 });
+			const tntSideMat = new THREE.MeshStandardMaterial({ map: tntSideTex, roughness: 0.85 });
+			const tntBottomMat = new THREE.MeshStandardMaterial({ map: tntBottomTex, roughness: 0.9 });
 			const particleMat = new THREE.MeshStandardMaterial({ color: 0xffc06b, roughness: 0.6 });
 
 			const blockGeo = new THREE.BoxGeometry(1, 1, 1);
@@ -82,7 +128,7 @@
 			const grassMats = [grassSideMat, grassSideMat, grassTopMat, dirtMat, grassSideMat, grassSideMat];
 			const dirtMats = [dirtMat, dirtMat, dirtMat, dirtMat, dirtMat, dirtMat];
 			const stoneMats = [stoneMat, stoneMat, stoneMat, stoneMat, stoneMat, stoneMat];
-			const tntMats = [tntMat, tntMat, tntMat, tntMat, tntMat, tntMat];
+			const tntMats = [tntSideMat, tntSideMat, tntTopMat, tntBottomMat, tntSideMat, tntSideMat];
 
 			const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
 
@@ -136,6 +182,11 @@
 				}
 			}
 
+			const playerHeight = 1.8;
+			const playerWidth = 0.6;
+			const playerDepth = 0.6;
+			const playerEyeHeight = playerHeight * 0.9;
+
 			const player = new THREE.Group();
 			const bodyMat = new THREE.MeshStandardMaterial({ color: 0xffd07a, roughness: 0.4 });
 			const limbMat = new THREE.MeshStandardMaterial({ color: 0x334856, roughness: 0.6 });
@@ -164,6 +215,15 @@
 			armRight.position.set(0.52, 1.25, 0);
 			player.add(armRight);
 
+			const playerBounds = new THREE.Box3().setFromObject(player);
+			const playerSize = new THREE.Vector3();
+			playerBounds.getSize(playerSize);
+			player.scale.set(
+				playerWidth / playerSize.x,
+				playerHeight / playerSize.y,
+				playerDepth / playerSize.z
+			);
+
 			const getHeightAt = (x: number, z: number) => {
 				const ix = THREE.MathUtils.clamp(Math.round(x + half), 0, terrainSize - 1);
 				const iz = THREE.MathUtils.clamp(Math.round(z + half), 0, terrainSize - 1);
@@ -175,8 +235,12 @@
 			const playerBody = world.createRigidBody(
 				RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(0, startHeight, 0)
 			);
-			const playerColliderDesc = RAPIER.ColliderDesc.cuboid(0.35, 0.95, 0.35);
-			playerColliderDesc.setTranslation(0, 0.95, 0);
+			const playerColliderDesc = RAPIER.ColliderDesc.cuboid(
+				playerWidth / 2,
+				playerHeight / 2,
+				playerDepth / 2
+			);
+			playerColliderDesc.setTranslation(0, playerHeight / 2, 0);
 			playerColliderDesc.setFriction(0.2);
 			const playerCollider = world.createCollider(playerColliderDesc, playerBody);
 			const controller = world.createCharacterController(0.05);
@@ -516,7 +580,7 @@
 
 			const forwardBase = new THREE.Vector3(0, 0, -1);
 			const xAxis = new THREE.Vector3(1, 0, 0);
-			const headOffset = new THREE.Vector3(0, 1.6, 0);
+			const headOffset = new THREE.Vector3(0, playerEyeHeight, 0);
 			const tempVec = new THREE.Vector3();
 			const tempVec2 = new THREE.Vector3();
 			const tempVec3 = new THREE.Vector3();
@@ -724,12 +788,17 @@
 				grassSideMat.dispose();
 				dirtMat.dispose();
 				stoneMat.dispose();
-				tntMat.dispose();
+				tntTopMat.dispose();
+				tntSideMat.dispose();
+				tntBottomMat.dispose();
 				particleMat.dispose();
 				grassTopTex.dispose();
 				grassSideTex.dispose();
 				dirtTex.dispose();
 				stoneTex.dispose();
+				tntTopTex.dispose();
+				tntSideTex.dispose();
+				tntBottomTex.dispose();
 				(body.geometry as THREE.BufferGeometry).dispose();
 				(head.geometry as THREE.BufferGeometry).dispose();
 				(legLeft.geometry as THREE.BufferGeometry).dispose();
