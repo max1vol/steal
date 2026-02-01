@@ -6,7 +6,7 @@
 	let container: HTMLDivElement | null = null;
 	let joystickEl: HTMLDivElement | null = null;
 	let joystickThumbEl: HTMLDivElement | null = null;
-	let lookPadEl: HTMLDivElement | null = null;
+	let jumpEl: HTMLDivElement | null = null;
 
 	onMount(() => {
 		let dispose = () => {};
@@ -240,7 +240,9 @@
 				}
 				pointerState.mouseDown = true;
 				pointerState.lastMouseX = event.clientX;
-				renderer.domElement.setPointerCapture(event.pointerId);
+				if (event.target instanceof HTMLElement) {
+					event.target.setPointerCapture(event.pointerId);
+				}
 			};
 
 			const handleMouseMove = (event: PointerEvent) => {
@@ -293,7 +295,7 @@
 			};
 
 			const handleJoystickDown = (event: PointerEvent) => {
-				if (event.pointerType !== 'touch' || !joystickEl) {
+				if (event.pointerType != 'touch' || !joystickEl) {
 					return;
 				}
 				joystickState.pointerId = event.pointerId;
@@ -304,7 +306,7 @@
 			};
 
 			const handleJoystickMove = (event: PointerEvent) => {
-				if (event.pointerId !== joystickState.pointerId) {
+				if (event.pointerId != joystickState.pointerId) {
 					return;
 				}
 				const radius = joystickState.radius || 1;
@@ -320,7 +322,7 @@
 			};
 
 			const handleJoystickUp = (event: PointerEvent) => {
-				if (event.pointerId !== joystickState.pointerId) {
+				if (event.pointerId != joystickState.pointerId) {
 					return;
 				}
 				joystickState.pointerId = null;
@@ -329,18 +331,40 @@
 				joystickEl?.releasePointerCapture(event.pointerId);
 			};
 
+			const handleJumpDown = (event: PointerEvent) => {
+				if (event.pointerType === 'mouse') {
+					return;
+				}
+				input.jump = true;
+				event.preventDefault();
+				event.stopPropagation();
+			};
+
+			const handleJumpUp = (event: PointerEvent) => {
+				if (event.pointerType === 'mouse') {
+					return;
+				}
+				input.jump = false;
+				event.stopPropagation();
+			};
+
 			const handleLookDown = (event: PointerEvent) => {
-				if (event.pointerType !== 'touch' || !lookPadEl) {
+				if (event.pointerType === 'mouse') {
+					return;
+				}
+				if (event.target instanceof HTMLElement && event.target.closest('.touch-pad')) {
 					return;
 				}
 				lookState.pointerId = event.pointerId;
 				lookState.lastX = event.clientX;
-				lookPadEl.setPointerCapture(event.pointerId);
+				if (event.target instanceof HTMLElement) {
+					event.target.setPointerCapture(event.pointerId);
+				}
 				event.preventDefault();
 			};
 
 			const handleLookMove = (event: PointerEvent) => {
-				if (event.pointerId !== lookState.pointerId) {
+				if (event.pointerId != lookState.pointerId) {
 					return;
 				}
 				const dx = event.clientX - lookState.lastX;
@@ -350,21 +374,26 @@
 			};
 
 			const handleLookUp = (event: PointerEvent) => {
-				if (event.pointerId !== lookState.pointerId) {
+				if (event.pointerId != lookState.pointerId) {
 					return;
 				}
 				lookState.pointerId = null;
-				lookPadEl?.releasePointerCapture(event.pointerId);
+				if (event.target instanceof HTMLElement) {
+					event.target.releasePointerCapture(event.pointerId);
+				}
 			};
 
 			joystickEl?.addEventListener('pointerdown', handleJoystickDown, { passive: false });
 			joystickEl?.addEventListener('pointermove', handleJoystickMove, { passive: false });
 			joystickEl?.addEventListener('pointerup', handleJoystickUp);
 			joystickEl?.addEventListener('pointercancel', handleJoystickUp);
-			lookPadEl?.addEventListener('pointerdown', handleLookDown, { passive: false });
-			lookPadEl?.addEventListener('pointermove', handleLookMove, { passive: false });
-			lookPadEl?.addEventListener('pointerup', handleLookUp);
-			lookPadEl?.addEventListener('pointercancel', handleLookUp);
+			jumpEl?.addEventListener('pointerdown', handleJumpDown, { passive: false });
+			jumpEl?.addEventListener('pointerup', handleJumpUp);
+			jumpEl?.addEventListener('pointercancel', handleJumpUp);
+			renderer.domElement.addEventListener('pointerdown', handleLookDown, { passive: false });
+			renderer.domElement.addEventListener('pointermove', handleLookMove, { passive: false });
+			renderer.domElement.addEventListener('pointerup', handleLookUp);
+			renderer.domElement.addEventListener('pointercancel', handleLookUp);
 
 			const fallingBlocks: Array<{ mesh: THREE.Mesh; body: RAPIER.RigidBody }> = [];
 
@@ -408,7 +437,7 @@
 
 				const analogTurn = moveAxis.x;
 				const analogMove = -moveAxis.y;
-				const turnInput = (input.left ? -1 : 0) + (input.right ? 1 : 0) + analogTurn;
+				const turnInput = -((input.left ? -1 : 0) + (input.right ? 1 : 0) + analogTurn);
 
 				let moveInput = analogMove * 0.9;
 				if (input.forward) {
@@ -543,10 +572,13 @@
 				joystickEl?.removeEventListener('pointermove', handleJoystickMove);
 				joystickEl?.removeEventListener('pointerup', handleJoystickUp);
 				joystickEl?.removeEventListener('pointercancel', handleJoystickUp);
-				lookPadEl?.removeEventListener('pointerdown', handleLookDown);
-				lookPadEl?.removeEventListener('pointermove', handleLookMove);
-				lookPadEl?.removeEventListener('pointerup', handleLookUp);
-				lookPadEl?.removeEventListener('pointercancel', handleLookUp);
+				jumpEl?.removeEventListener('pointerdown', handleJumpDown);
+				jumpEl?.removeEventListener('pointerup', handleJumpUp);
+				jumpEl?.removeEventListener('pointercancel', handleJumpUp);
+				renderer.domElement.removeEventListener('pointerdown', handleLookDown);
+				renderer.domElement.removeEventListener('pointermove', handleLookMove);
+				renderer.domElement.removeEventListener('pointerup', handleLookUp);
+				renderer.domElement.removeEventListener('pointercancel', handleLookUp);
 				container?.removeChild(renderer.domElement);
 
 				blockGeo.dispose();
@@ -603,14 +635,14 @@
 <div class="page">
 	<div class="hud">
 		<h1>Runner Field</h1>
-		<p>W / A / S / D or Arrow keys + mouse drag. Space to jump. Touch: left stick move, right pad look.</p>
+		<p>W / A / S / D or Arrow keys + mouse drag. Space to jump. Touch: left stick move, drag anywhere to look, tap Jump.</p>
 	</div>
 	<div class="scene" bind:this={container}></div>
 	<div class="touch-controls">
 		<div class="touch-pad joystick" bind:this={joystickEl}>
 			<div class="thumb" bind:this={joystickThumbEl}></div>
 		</div>
-		<div class="touch-pad look" bind:this={lookPadEl}></div>
+		<div class="touch-pad jump" bind:this={jumpEl}>Jump</div>
 	</div>
 </div>
 
@@ -693,8 +725,8 @@
 
 	.touch-pad {
 		position: absolute;
-		width: 136px;
-		height: 136px;
+		width: 96px;
+		height: 96px;
 		border-radius: 999px;
 		border: 1px solid rgba(143, 177, 185, 0.35);
 		background: rgba(8, 12, 15, 0.55);
@@ -712,18 +744,15 @@
 
 	.touch-pad.joystick {
 		left: calc(20px + env(safe-area-inset-left));
-		bottom: calc(20px + env(safe-area-inset-bottom));
+		bottom: calc(18px + env(safe-area-inset-bottom));
 	}
 
-	.touch-pad.look {
-		right: calc(20px + env(safe-area-inset-right));
-		bottom: calc(20px + env(safe-area-inset-bottom));
+	.touch-pad.jump {
+		right: calc(18px + env(safe-area-inset-right));
+		bottom: calc(18px + env(safe-area-inset-bottom));
 	}
 
-	.touch-pad.look::after {
-		content: 'Look';
-	}
-
+	
 	.touch-pad .thumb {
 		width: 58px;
 		height: 58px;
