@@ -33,7 +33,12 @@
 
 			const camera = new THREE.PerspectiveCamera(65, 1, 0.1, 300);
 			const cameraRig = new THREE.Group();
-			camera.position.set(0, 4.6, 7.5);
+			const cameraOffset = new THREE.Vector3(0, 4.6, 7.5);
+			const defaultCameraDistance = cameraOffset.length();
+			let cameraDistance = defaultCameraDistance;
+			const collisionDampIn = 8;
+			const collisionDampOut = 3.5;
+			camera.position.copy(cameraOffset);
 			cameraRig.add(camera);
 			scene.add(cameraRig);
 
@@ -76,6 +81,7 @@
 			const half = Math.floor(terrainSize / 2);
 			const heights: number[][] = [];
 			const terrainMeshes: THREE.Mesh[] = [];
+			const cameraOccluders: THREE.Mesh[] = [];
 
 			const heightNoise = (x: number, z: number) => {
 				return (
@@ -110,6 +116,7 @@
 						const block = new THREE.Mesh(blockGeo, mats);
 						block.position.set(worldX, y + 0.5, worldZ);
 						terrainMeshes.push(block);
+						cameraOccluders.push(block);
 						scene.add(block);
 					}
 
@@ -367,6 +374,7 @@
 				const spawnY = THREE.MathUtils.randFloat(10, 16);
 				const block = new THREE.Mesh(blockGeo, stoneMats);
 				block.position.set(spawnX, spawnY, spawnZ);
+				cameraOccluders.push(block);
 				scene.add(block);
 
 				const bodyDesc = RAPIER.RigidBodyDesc.dynamic().setTranslation(spawnX, spawnY, spawnZ);
@@ -382,6 +390,9 @@
 			const forwardBase = new THREE.Vector3(0, 0, -1);
 			const headOffset = new THREE.Vector3(0, 1.6, 0);
 			const tempVec = new THREE.Vector3();
+			const tempVec2 = new THREE.Vector3();
+			const tempVec3 = new THREE.Vector3();
+			const raycaster = new THREE.Raycaster();
 			
 			const clock = new THREE.Clock();
 			let frame = 0;
@@ -451,9 +462,30 @@
 
 				cameraRig.position.copy(player.position);
 				cameraRig.rotation.y = player.rotation.y;
-			
-				tempVec.copy(player.position).add(headOffset);
-				camera.lookAt(tempVec);
+				cameraRig.updateMatrixWorld();
+
+				const target = tempVec.copy(player.position).add(headOffset);
+				const desiredWorld = tempVec2.copy(cameraOffset);
+				cameraRig.localToWorld(desiredWorld);
+
+				const toCamera = tempVec3.copy(desiredWorld).sub(target);
+				const desiredDistance = toCamera.length();
+				if (desiredDistance > 0.001) {
+					toCamera.divideScalar(desiredDistance);
+					raycaster.set(target, toCamera);
+					raycaster.far = desiredDistance;
+					const hits = raycaster.intersectObjects(cameraOccluders, false);
+					const collisionDistance = hits.length > 0
+						? Math.max(hits[0].distance - 0.35, 1.4)
+						: desiredDistance;
+					const damp = collisionDistance < cameraDistance ? collisionDampIn : collisionDampOut;
+					cameraDistance = THREE.MathUtils.damp(cameraDistance, collisionDistance, damp, delta);
+					cameraDistance = Math.min(cameraDistance, desiredDistance);
+					const adjustedWorld = tempVec2.copy(target).addScaledVector(toCamera, cameraDistance);
+					camera.position.copy(cameraRig.worldToLocal(adjustedWorld));
+				}
+
+				camera.lookAt(target);
 
 				spawnTimer -= delta;
 				if (spawnTimer <= 0) {
@@ -471,6 +503,10 @@
 
 					if (position.y < -10) {
 						scene.remove(block.mesh);
+						const occluderIndex = cameraOccluders.indexOf(block.mesh);
+						if (occluderIndex >= 0) {
+							cameraOccluders.splice(occluderIndex, 1);
+						}
 						world.removeRigidBody(block.body);
 						fallingBlocks.splice(i, 1);
 					}
@@ -534,6 +570,7 @@
 				for (const mesh of terrainMeshes) {
 					scene.remove(mesh);
 				}
+				cameraOccluders.length = 0;
 
 				for (const block of fallingBlocks) {
 					scene.remove(block.mesh);
@@ -593,6 +630,7 @@
 	}
 
 	.page {
+		min-height: 100svh;
 		min-height: 100vh;
 		width: 100%;
 		background: radial-gradient(circle at 15% 20%, #2b404a, #0b1216 55%);
@@ -645,10 +683,12 @@
 	}
 
 	.touch-controls {
-		position: absolute;
+		position: fixed;
 		inset: 0;
+		padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 		pointer-events: none;
 		display: none;
+		z-index: 3;
 	}
 
 	.touch-pad {
@@ -671,13 +711,13 @@
 	}
 
 	.touch-pad.joystick {
-		left: 20px;
-		bottom: 20px;
+		left: calc(20px + env(safe-area-inset-left));
+		bottom: calc(20px + env(safe-area-inset-bottom));
 	}
 
 	.touch-pad.look {
-		right: 20px;
-		bottom: 20px;
+		right: calc(20px + env(safe-area-inset-right));
+		bottom: calc(20px + env(safe-area-inset-bottom));
 	}
 
 	.touch-pad.look::after {
