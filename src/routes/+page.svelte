@@ -7,6 +7,7 @@
 	let joystickEl: HTMLDivElement | null = null;
 	let joystickThumbEl: HTMLDivElement | null = null;
 	let jumpEl: HTMLDivElement | null = null;
+	let worldLabel = 'Verdant Expanse';
 
 	onMount(() => {
 		let dispose = () => {};
@@ -31,7 +32,7 @@
 			renderer.outputColorSpace = THREE.SRGBColorSpace;
 			container.appendChild(renderer.domElement);
 
-			const camera = new THREE.PerspectiveCamera(65, 1, 0.1, 300);
+			const camera = new THREE.PerspectiveCamera(65, 1, 0.1, 420);
 			const cameraRig = new THREE.Group();
 			cameraRig.rotation.order = 'YXZ';
 			const baseCameraOffset = new THREE.Vector3(0, 4.6, 7.5);
@@ -86,6 +87,14 @@
 			const grassSideTex = loadTexture('/textures/grass_side.png');
 			const dirtTex = loadTexture('/textures/dirt.png');
 			const stoneTex = loadTexture('/textures/stone.png');
+			const cobbleTex = loadTexture('/textures/cobble.png');
+			const woodPlankTex = loadTexture('/textures/wood_plank.png');
+			const redWoodPlankTex = loadTexture('/textures/red_wood_plank.png');
+			const sandstoneTex = loadTexture('/textures/sandstone.png');
+			const obsidianTex = loadTexture('/textures/obsidian.png');
+			const marsSandTex = loadTexture('/textures/mars_sand.png');
+			const marsRockTex = loadTexture('/textures/mars_rock.png');
+			const moonDustTex = loadTexture('/textures/moon_dust.png');
 			const tntTopTex = createCanvasTexture((ctx, size) => {
 				ctx.fillStyle = '#c42d2d';
 				ctx.fillRect(0, 0, size, size);
@@ -117,70 +126,433 @@
 			const grassSideMat = new THREE.MeshStandardMaterial({ map: grassSideTex, roughness: 0.95 });
 			const dirtMat = new THREE.MeshStandardMaterial({ map: dirtTex, roughness: 1 });
 			const stoneMat = new THREE.MeshStandardMaterial({ map: stoneTex, roughness: 1 });
+			const cobbleMat = new THREE.MeshStandardMaterial({ map: cobbleTex, roughness: 1 });
+			const woodPlankMat = new THREE.MeshStandardMaterial({ map: woodPlankTex, roughness: 0.9 });
+			const redWoodPlankMat = new THREE.MeshStandardMaterial({ map: redWoodPlankTex, roughness: 0.9 });
+			const sandstoneMat = new THREE.MeshStandardMaterial({ map: sandstoneTex, roughness: 0.95 });
+			const obsidianMat = new THREE.MeshStandardMaterial({
+				map: obsidianTex,
+				roughness: 0.45,
+				metalness: 0.12
+			});
+			const portalFrameMat = new THREE.MeshStandardMaterial({
+				map: obsidianTex,
+				roughness: 0.35,
+				metalness: 0.2,
+				emissive: new THREE.Color(0x130a1b),
+				emissiveIntensity: 0.7
+			});
+			const marsSandMat = new THREE.MeshStandardMaterial({ map: marsSandTex, roughness: 1 });
+			const marsRockMat = new THREE.MeshStandardMaterial({ map: marsRockTex, roughness: 0.95 });
+			const moonDustMat = new THREE.MeshStandardMaterial({ map: moonDustTex, roughness: 1 });
 			const tntTopMat = new THREE.MeshStandardMaterial({ map: tntTopTex, roughness: 0.85 });
 			const tntSideMat = new THREE.MeshStandardMaterial({ map: tntSideTex, roughness: 0.85 });
 			const tntBottomMat = new THREE.MeshStandardMaterial({ map: tntBottomTex, roughness: 0.9 });
 			const particleMat = new THREE.MeshStandardMaterial({ color: 0xffc06b, roughness: 0.6 });
+			const portalParticleMat = new THREE.MeshStandardMaterial({
+				color: 0xffffff,
+				emissive: 0xffffff,
+				emissiveIntensity: 0.85,
+				transparent: true,
+				opacity: 0.9,
+				roughness: 0.25
+			});
 
 			const blockGeo = new THREE.BoxGeometry(1, 1, 1);
 			const fallingBlockGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
 			const particleGeo = new THREE.BoxGeometry(0.08, 0.08, 0.08);
+			const portalParticleGeo = new THREE.IcosahedronGeometry(0.07, 0);
+			const portalFrameGeo = new THREE.TorusGeometry(1, 0.12, 12, 40);
+			const portalCoreGeo = new THREE.CircleGeometry(0.88, 32);
+			const uniformMats = (mat: THREE.MeshStandardMaterial) => [mat, mat, mat, mat, mat, mat];
 			const grassMats = [grassSideMat, grassSideMat, grassTopMat, dirtMat, grassSideMat, grassSideMat];
-			const dirtMats = [dirtMat, dirtMat, dirtMat, dirtMat, dirtMat, dirtMat];
-			const stoneMats = [stoneMat, stoneMat, stoneMat, stoneMat, stoneMat, stoneMat];
+			const dirtMats = uniformMats(dirtMat);
+			const stoneMats = uniformMats(stoneMat);
+			const cobbleMats = uniformMats(cobbleMat);
+			const woodMats = uniformMats(woodPlankMat);
+			const redWoodMats = uniformMats(redWoodPlankMat);
+			const sandstoneMats = uniformMats(sandstoneMat);
+			const obsidianMats = uniformMats(obsidianMat);
+			const marsSandMats = uniformMats(marsSandMat);
+			const marsRockMats = uniformMats(marsRockMat);
+			const moonDustMats = uniformMats(moonDustMat);
 			const tntMats = [tntSideMat, tntSideMat, tntTopMat, tntBottomMat, tntSideMat, tntSideMat];
+			const blockMats = {
+				grass: grassMats,
+				dirt: dirtMats,
+				stone: stoneMats,
+				cobble: cobbleMats,
+				wood: woodMats,
+				redwood: redWoodMats,
+				sandstone: sandstoneMats,
+				obsidian: obsidianMats,
+				marsSand: marsSandMats,
+				marsRock: marsRockMats,
+				moonDust: moonDustMats
+			} as const;
 
-			const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
+			type BlockType = keyof typeof blockMats;
 
-			const terrainSize = 24;
-			const half = Math.floor(terrainSize / 2);
-			const heights: number[][] = [];
-			const terrainMeshes: THREE.Mesh[] = [];
-			const cameraOccluders: THREE.Mesh[] = [];
-
-			const heightNoise = (x: number, z: number) => {
-				return (
-					Math.sin(x * 0.35) * 0.9 +
-					Math.cos(z * 0.27) * 0.9 +
-					Math.sin((x + z) * 0.2) * 0.6
-				);
+			type WorldDefinition = {
+				id: 'earth' | 'mars' | 'moon';
+				name: string;
+				seed: number;
+				skyColor: string;
+				fogColor: string;
+				fogNear: number;
+				fogFar: number;
+				gravity: number;
+				music: { url: string; volume: number };
+				portalColor: string;
+				height: {
+					base: number;
+					amplitude: number;
+					ridgeAmp: number;
+					min: number;
+					max: number;
+					scale: number;
+					ridgeScale: number;
+				};
+				palette: {
+					top: BlockType;
+					sub: BlockType;
+					deep: BlockType;
+					topVariants?: BlockType[];
+					deepVariants?: BlockType[];
+					variantScale: number;
+				};
+				light: {
+					hemiSky: number;
+					hemiGround: number;
+					hemiIntensity: number;
+					dirColor: number;
+					dirIntensity: number;
+					dirPos: [number, number, number];
+				};
 			};
 
-			const computeHeight = (x: number, z: number) => {
-				const base = 3;
-				const height = base + heightNoise(x, z) * 2.1;
-				return THREE.MathUtils.clamp(Math.round(height), 1, 7);
-			};
-
-			for (let ix = 0; ix < terrainSize; ix += 1) {
-				heights[ix] = [];
-				for (let iz = 0; iz < terrainSize; iz += 1) {
-					const worldX = ix - half;
-					const worldZ = iz - half;
-					const height = computeHeight(worldX, worldZ);
-					heights[ix][iz] = height;
-
-					for (let y = 0; y < height; y += 1) {
-						let mats = dirtMats;
-						if (y === height - 1) {
-							mats = grassMats;
-						} else if (y < height - 3) {
-							mats = stoneMats;
-						}
-
-						const block = new THREE.Mesh(blockGeo, mats);
-						block.position.set(worldX, y + 0.5, worldZ);
-						terrainMeshes.push(block);
-						cameraOccluders.push(block);
-						scene.add(block);
+			const worlds: WorldDefinition[] = [
+				{
+					id: 'earth',
+					name: 'Verdant Expanse',
+					seed: 142857,
+					skyColor: '#7ab3ff',
+					fogColor: '#c7e4ff',
+					fogNear: 38,
+					fogFar: 140,
+					gravity: -18,
+					music: { url: '/audio/forest_ambience.mp3', volume: 0.48 },
+					portalColor: '#6ef2c5',
+					height: {
+						base: 4.6,
+						amplitude: 3.2,
+						ridgeAmp: 1.1,
+						min: 2,
+						max: 10,
+						scale: 0.08,
+						ridgeScale: 0.21
+					},
+					palette: {
+						top: 'grass',
+						sub: 'dirt',
+						deep: 'stone',
+						topVariants: ['cobble', 'wood', 'redwood'],
+						deepVariants: ['cobble'],
+						variantScale: 0.18
+					},
+					light: {
+						hemiSky: 0xeef6ff,
+						hemiGround: 0x3f5b68,
+						hemiIntensity: 0.95,
+						dirColor: 0xffffff,
+						dirIntensity: 1.15,
+						dirPos: [7, 12, 4]
 					}
-
-					const columnBody = world.createRigidBody(
-						RAPIER.RigidBodyDesc.fixed().setTranslation(worldX, height / 2, worldZ)
-					);
-					world.createCollider(RAPIER.ColliderDesc.cuboid(0.5, height / 2, 0.5), columnBody);
+				},
+				{
+					id: 'mars',
+					name: 'Mars Rust Dunes',
+					seed: 917331,
+					skyColor: '#c86a48',
+					fogColor: '#a84d37',
+					fogNear: 32,
+					fogFar: 125,
+					gravity: -15,
+					music: { url: '/audio/desert_travel.ogg', volume: 0.42 },
+					portalColor: '#ff884c',
+					height: {
+						base: 3.8,
+						amplitude: 2.6,
+						ridgeAmp: 0.9,
+						min: 2,
+						max: 8,
+						scale: 0.07,
+						ridgeScale: 0.19
+					},
+					palette: {
+						top: 'marsSand',
+						sub: 'sandstone',
+						deep: 'marsRock',
+						topVariants: ['sandstone', 'marsRock'],
+						deepVariants: ['obsidian', 'marsRock'],
+						variantScale: 0.2
+					},
+					light: {
+						hemiSky: 0xffd0b3,
+						hemiGround: 0x5b2d25,
+						hemiIntensity: 0.9,
+						dirColor: 0xffc09a,
+						dirIntensity: 1.05,
+						dirPos: [8, 10, 3]
+					}
+				},
+				{
+					id: 'moon',
+					name: 'Moon Dust Sea',
+					seed: 424242,
+					skyColor: '#1a2032',
+					fogColor: '#111826',
+					fogNear: 30,
+					fogFar: 118,
+					gravity: -9,
+					music: { url: '/audio/outer_space.mp3', volume: 0.38 },
+					portalColor: '#7bd1ff',
+					height: {
+						base: 3.2,
+						amplitude: 2.4,
+						ridgeAmp: 1.2,
+						min: 2,
+						max: 9,
+						scale: 0.09,
+						ridgeScale: 0.23
+					},
+					palette: {
+						top: 'moonDust',
+						sub: 'moonDust',
+						deep: 'obsidian',
+						topVariants: ['cobble'],
+						deepVariants: ['moonDust', 'obsidian'],
+						variantScale: 0.22
+					},
+					light: {
+						hemiSky: 0xc9d8ff,
+						hemiGround: 0x1a2235,
+						hemiIntensity: 0.78,
+						dirColor: 0xbad6ff,
+						dirIntensity: 0.9,
+						dirPos: [-4, 9, -6]
+					}
 				}
-			}
+			];
+
+			const worldById = new Map(worlds.map((world) => [world.id, world]));
+			let currentWorld = worlds[0];
+			let gravity = currentWorld.gravity;
+			worldLabel = currentWorld.name;
+
+			const world = new RAPIER.World({ x: 0, y: gravity, z: 0 });
+
+			const chunkSize = 16;
+			const chunkRadius = 3;
+			const cameraOccluders: THREE.Object3D[] = [];
+			const blockTypeKeys = Object.keys(blockMats) as BlockType[];
+			const chunkMatrix = new THREE.Matrix4();
+
+			type Chunk = {
+				key: string;
+				x: number;
+				z: number;
+				meshes: THREE.InstancedMesh[];
+				bodies: RAPIER.RigidBody[];
+			};
+
+			const chunks = new Map<string, Chunk>();
+
+			const hash2D = (x: number, z: number, seed: number) => {
+				let h = Math.imul(x, 374761393) ^ Math.imul(z, 668265263) ^ seed;
+				h = (h ^ (h >> 13)) * 1274126177;
+				return ((h ^ (h >> 16)) >>> 0) / 4294967295;
+			};
+
+			const fade = (t: number) => t * t * (3 - 2 * t);
+			const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+
+			const valueNoise = (x: number, z: number, seed: number) => {
+				const x0 = Math.floor(x);
+				const z0 = Math.floor(z);
+				const x1 = x0 + 1;
+				const z1 = z0 + 1;
+				const sx = fade(x - x0);
+				const sz = fade(z - z0);
+				const n00 = hash2D(x0, z0, seed);
+				const n10 = hash2D(x1, z0, seed);
+				const n01 = hash2D(x0, z1, seed);
+				const n11 = hash2D(x1, z1, seed);
+				const ix0 = lerp(n00, n10, sx);
+				const ix1 = lerp(n01, n11, sx);
+				return lerp(ix0, ix1, sz);
+			};
+
+			const fractalNoise = (x: number, z: number, seed: number) => {
+				let total = 0;
+				let amplitude = 1;
+				let frequency = 1;
+				let max = 0;
+				for (let i = 0; i < 4; i += 1) {
+					const n = valueNoise(x * frequency, z * frequency, seed + i * 13) * 2 - 1;
+					total += n * amplitude;
+					max += amplitude;
+					amplitude *= 0.5;
+					frequency *= 2;
+				}
+				return total / max;
+			};
+
+			const computeHeight = (x: number, z: number, worldDef: WorldDefinition) => {
+				const detail = fractalNoise(x * worldDef.height.scale, z * worldDef.height.scale, worldDef.seed);
+				const ridge = Math.abs(
+					fractalNoise(x * worldDef.height.ridgeScale, z * worldDef.height.ridgeScale, worldDef.seed + 91)
+				);
+				const height = worldDef.height.base + detail * worldDef.height.amplitude + ridge * worldDef.height.ridgeAmp;
+				return THREE.MathUtils.clamp(Math.round(height), worldDef.height.min, worldDef.height.max);
+			};
+
+			const pickVariant = (
+				variants: BlockType[] | undefined,
+				noise: number,
+				fallback: BlockType
+			) => {
+				if (!variants || variants.length === 0) {
+					return fallback;
+				}
+				if (noise < 0.65) {
+					return fallback;
+				}
+				const idx = Math.min(
+					Math.floor(((noise - 0.65) / 0.35) * variants.length),
+					variants.length - 1
+				);
+				return variants[idx] ?? fallback;
+			};
+
+			const pickBlockType = (x: number, z: number, y: number, height: number) => {
+				const surfaceNoise = valueNoise(
+					x * currentWorld.palette.variantScale,
+					z * currentWorld.palette.variantScale,
+					currentWorld.seed + 181
+				);
+				if (y === height - 1) {
+					return pickVariant(currentWorld.palette.topVariants, surfaceNoise, currentWorld.palette.top);
+				}
+				if (y >= height - 3) {
+					return currentWorld.palette.sub;
+				}
+				const deepNoise = valueNoise(
+					x * currentWorld.palette.variantScale * 0.8,
+					z * currentWorld.palette.variantScale * 0.8,
+					currentWorld.seed + 419
+				);
+				return pickVariant(currentWorld.palette.deepVariants, deepNoise, currentWorld.palette.deep);
+			};
+
+			const getHeightAt = (x: number, z: number) => computeHeight(x, z, currentWorld);
+
+			const buildChunk = (cx: number, cz: number) => {
+				const key = `${cx},${cz}`;
+				if (chunks.has(key)) {
+					return;
+				}
+				const positionsByType: Record<BlockType, number[]> = {} as Record<BlockType, number[]>;
+				for (const type of blockTypeKeys) {
+					positionsByType[type] = [];
+				}
+				const bodies: RAPIER.RigidBody[] = [];
+				for (let ix = 0; ix < chunkSize; ix += 1) {
+					for (let iz = 0; iz < chunkSize; iz += 1) {
+						const worldX = cx * chunkSize + ix;
+						const worldZ = cz * chunkSize + iz;
+						const height = computeHeight(worldX, worldZ, currentWorld);
+						for (let y = 0; y < height; y += 1) {
+							const blockType = pickBlockType(worldX, worldZ, y, height);
+							positionsByType[blockType].push(worldX, y + 0.5, worldZ);
+						}
+						const columnBody = world.createRigidBody(
+							RAPIER.RigidBodyDesc.fixed().setTranslation(worldX, height / 2, worldZ)
+						);
+						world.createCollider(
+							RAPIER.ColliderDesc.cuboid(0.5, height / 2, 0.5),
+							columnBody
+						);
+						bodies.push(columnBody);
+					}
+				}
+
+				const meshes: THREE.InstancedMesh[] = [];
+				for (const type of blockTypeKeys) {
+					const positions = positionsByType[type];
+					if (!positions.length) {
+						continue;
+					}
+					const mesh = new THREE.InstancedMesh(blockGeo, blockMats[type], positions.length / 3);
+					for (let i = 0; i < positions.length; i += 3) {
+						chunkMatrix.makeTranslation(positions[i], positions[i + 1], positions[i + 2]);
+						mesh.setMatrixAt(i / 3, chunkMatrix);
+					}
+					mesh.instanceMatrix.needsUpdate = true;
+					scene.add(mesh);
+					cameraOccluders.push(mesh);
+					meshes.push(mesh);
+				}
+
+				chunks.set(key, { key, x: cx, z: cz, meshes, bodies });
+			};
+
+			const removeChunk = (chunk: Chunk) => {
+				for (const mesh of chunk.meshes) {
+					scene.remove(mesh);
+					const occIndex = cameraOccluders.indexOf(mesh);
+					if (occIndex >= 0) {
+						cameraOccluders.splice(occIndex, 1);
+					}
+				}
+				for (const body of chunk.bodies) {
+					world.removeRigidBody(body);
+				}
+			};
+
+			const clearChunks = () => {
+				for (const chunk of chunks.values()) {
+					removeChunk(chunk);
+				}
+				chunks.clear();
+			};
+
+			let lastChunkX = Number.NaN;
+			let lastChunkZ = Number.NaN;
+
+			const syncChunks = (worldX: number, worldZ: number, force = false) => {
+				const cx = Math.floor(worldX / chunkSize);
+				const cz = Math.floor(worldZ / chunkSize);
+				if (!force && cx === lastChunkX && cz === lastChunkZ) {
+					return;
+				}
+				lastChunkX = cx;
+				lastChunkZ = cz;
+				for (let x = cx - chunkRadius; x <= cx + chunkRadius; x += 1) {
+					for (let z = cz - chunkRadius; z <= cz + chunkRadius; z += 1) {
+						buildChunk(x, z);
+					}
+				}
+				for (const [key, chunk] of chunks.entries()) {
+					if (
+						Math.abs(chunk.x - cx) > chunkRadius ||
+						Math.abs(chunk.z - cz) > chunkRadius
+					) {
+						removeChunk(chunk);
+						chunks.delete(key);
+					}
+				}
+			};
 
 			const playerHeight = 1.8;
 			const playerWidth = 0.6;
@@ -224,12 +596,6 @@
 				playerDepth / playerSize.z
 			);
 
-			const getHeightAt = (x: number, z: number) => {
-				const ix = THREE.MathUtils.clamp(Math.round(x + half), 0, terrainSize - 1);
-				const iz = THREE.MathUtils.clamp(Math.round(z + half), 0, terrainSize - 1);
-				return heights[ix][iz];
-			};
-
 			const startHeight = getHeightAt(0, 0);
 			player.position.set(0, startHeight, 0);
 			const playerBody = world.createRigidBody(
@@ -250,6 +616,91 @@
 			controller.setMinSlopeSlideAngle(Math.PI / 3);
 			scene.add(player);
 
+			const bgmCache = new Map<string, HTMLAudioElement>();
+			const fadingOut: HTMLAudioElement[] = [];
+			let audioUnlocked = false;
+			let currentBgm: HTMLAudioElement | null = null;
+			let bgmTargetVolume = currentWorld.music.volume;
+			let pendingBgm: { url: string; volume: number } | null = {
+				url: currentWorld.music.url,
+				volume: currentWorld.music.volume
+			};
+			const portalSfx = new Audio('/audio/portal.ogg');
+			portalSfx.preload = 'auto';
+			portalSfx.volume = 0.7;
+
+			const getBgm = (url: string) => {
+				const cached = bgmCache.get(url);
+				if (cached) {
+					return cached;
+				}
+				const audio = new Audio(url);
+				audio.loop = true;
+				audio.volume = 0;
+				audio.preload = 'auto';
+				bgmCache.set(url, audio);
+				return audio;
+			};
+
+			const switchBgm = (url: string, volume: number) => {
+				if (!audioUnlocked) {
+					pendingBgm = { url, volume };
+					return;
+				}
+				const next = getBgm(url);
+				bgmTargetVolume = volume;
+				if (currentBgm === next) {
+					return;
+				}
+				if (currentBgm) {
+					fadingOut.push(currentBgm);
+				}
+				currentBgm = next;
+				currentBgm.currentTime = 0;
+				currentBgm.volume = 0;
+				currentBgm.play().catch(() => {});
+			};
+
+			const ensureAudio = () => {
+				if (audioUnlocked) {
+					return;
+				}
+				audioUnlocked = true;
+				if (pendingBgm) {
+					switchBgm(pendingBgm.url, pendingBgm.volume);
+					pendingBgm = null;
+				} else {
+					switchBgm(currentWorld.music.url, currentWorld.music.volume);
+				}
+			};
+
+			const updateAudio = (delta: number) => {
+				if (!audioUnlocked) {
+					return;
+				}
+				if (currentBgm) {
+					currentBgm.volume += (bgmTargetVolume - currentBgm.volume) * Math.min(1, delta * 2.2);
+				}
+				for (let i = fadingOut.length - 1; i >= 0; i -= 1) {
+					const fading = fadingOut[i];
+					fading.volume = Math.max(0, fading.volume - delta * 0.6);
+					if (fading.volume <= 0.001) {
+						fading.pause();
+						fading.currentTime = 0;
+						fadingOut.splice(i, 1);
+					}
+				}
+			};
+
+			const playPortalSound = () => {
+				if (!audioUnlocked) {
+					return;
+				}
+				const instance = portalSfx.cloneNode(true) as HTMLAudioElement;
+				instance.volume = portalSfx.volume;
+				instance.play().catch(() => {});
+			};
+
 			const input = {
 				forward: false,
 				back: false,
@@ -259,6 +710,7 @@
 			};
 
 			const handleKeyDown = (event: KeyboardEvent) => {
+				ensureAudio();
 				switch (event.code) {
 					case 'KeyW':
 					case 'ArrowUp':
@@ -326,6 +778,7 @@
 				if (event.pointerType !== 'mouse' || event.button !== 0) {
 					return;
 				}
+				ensureAudio();
 				pointerState.mouseDown = true;
 				pointerState.lastMouseX = event.clientX;
 				pointerState.lastMouseY = event.clientY;
@@ -391,6 +844,7 @@
 				if (event.pointerType != 'touch' || !joystickEl) {
 					return;
 				}
+				ensureAudio();
 				joystickState.pointerId = event.pointerId;
 				joystickEl.setPointerCapture(event.pointerId);
 				updateJoystickBounds();
@@ -428,6 +882,7 @@
 				if (event.pointerType === 'mouse') {
 					return;
 				}
+				ensureAudio();
 				input.jump = true;
 				event.preventDefault();
 				event.stopPropagation();
@@ -448,6 +903,7 @@
 				if (event.target instanceof HTMLElement && event.target.closest('.touch-pad')) {
 					return;
 				}
+				ensureAudio();
 				lookState.pointerId = event.pointerId;
 				lookState.lastX = event.clientX;
 				lookState.lastY = event.clientY;
@@ -492,6 +948,24 @@
 			renderer.domElement.addEventListener('pointerup', handleLookUp);
 			renderer.domElement.addEventListener('pointercancel', handleLookUp);
 
+			type WorldId = WorldDefinition['id'];
+
+			type Portal = {
+				targetId: WorldId;
+				group: THREE.Group;
+				core: THREE.Mesh;
+				frame: THREE.Mesh;
+				label: THREE.Sprite;
+				color: THREE.Color;
+				pulseOffset: number;
+			};
+
+			type PortalParticle = {
+				mesh: THREE.Mesh;
+				velocity: THREE.Vector3;
+				life: number;
+			};
+
 			type FallingBlock = {
 				mesh: THREE.Mesh;
 				body: RAPIER.RigidBody;
@@ -521,13 +995,202 @@
 			const explosionRadius = 4.5;
 			const explosionSpeed = 6.0;
 			const maxChainLevel = 4;
+			const portals: Portal[] = [];
+			const portalParticles: PortalParticle[] = [];
+			let portalTransition: { targetId: WorldId; timer: number } | null = null;
+			let portalCooldown = 0;
+
+			const portalLinks: Record<WorldId, WorldId[]> = {
+				earth: ['mars', 'moon'],
+				mars: ['earth', 'moon'],
+				moon: ['earth', 'mars']
+			};
+
+			const createLabelTexture = (text: string, color: string) => {
+				const canvas = document.createElement('canvas');
+				canvas.width = 256;
+				canvas.height = 64;
+				const ctx = canvas.getContext('2d');
+				if (ctx) {
+					ctx.imageSmoothingEnabled = false;
+					ctx.fillStyle = 'rgba(8, 12, 16, 0.7)';
+					ctx.fillRect(0, 0, canvas.width, canvas.height);
+					ctx.strokeStyle = color;
+					ctx.lineWidth = 4;
+					ctx.strokeRect(6, 6, canvas.width - 12, canvas.height - 12);
+					ctx.fillStyle = '#fef3dd';
+					ctx.font = 'bold 26px "Space Grotesk", sans-serif';
+					ctx.textAlign = 'center';
+					ctx.textBaseline = 'middle';
+					ctx.fillText(text.toUpperCase(), canvas.width / 2, canvas.height / 2);
+				}
+				const texture = new THREE.CanvasTexture(canvas);
+				texture.colorSpace = THREE.SRGBColorSpace;
+				texture.magFilter = THREE.NearestFilter;
+				texture.minFilter = THREE.NearestMipMapNearestFilter;
+				return texture;
+			};
+
+			const clearPortals = () => {
+				for (const portal of portals) {
+					scene.remove(portal.group);
+					const occIndex = cameraOccluders.indexOf(portal.frame);
+					if (occIndex >= 0) {
+						cameraOccluders.splice(occIndex, 1);
+					}
+					(portal.core.material as THREE.Material).dispose();
+					const labelMat = portal.label.material as THREE.SpriteMaterial;
+					labelMat.map?.dispose();
+					labelMat.dispose();
+				}
+				portals.length = 0;
+			};
+
+			const buildPortals = () => {
+				clearPortals();
+				const targets = portalLinks[currentWorld.id];
+				const baseAngle = (currentWorld.seed % 10) * 0.32;
+				targets.forEach((targetId, index) => {
+					const target = worldById.get(targetId);
+					if (!target) {
+						return;
+					}
+					const angle = baseAngle + (index / targets.length) * Math.PI * 2;
+					const radius = 12 + index * 6;
+					const x = Math.round(Math.cos(angle) * radius);
+					const z = Math.round(Math.sin(angle) * radius);
+					const y = getHeightAt(x, z) + 1.2;
+
+					const group = new THREE.Group();
+					const frame = new THREE.Mesh(portalFrameGeo, portalFrameMat);
+					frame.castShadow = true;
+					group.add(frame);
+
+					const coreColor = new THREE.Color(target.portalColor);
+					const coreMat = new THREE.MeshStandardMaterial({
+						color: coreColor,
+						emissive: coreColor,
+						emissiveIntensity: 0.95,
+						transparent: true,
+						opacity: 0.75,
+						roughness: 0.2,
+						side: THREE.DoubleSide
+					});
+					const core = new THREE.Mesh(portalCoreGeo, coreMat);
+					core.position.z = 0.02;
+					group.add(core);
+
+					const labelTexture = createLabelTexture(`To ${target.name}`, target.portalColor);
+					const labelMat = new THREE.SpriteMaterial({
+						map: labelTexture,
+						transparent: true,
+						depthTest: false
+					});
+					const label = new THREE.Sprite(labelMat);
+					label.position.set(0, 1.5, 0);
+					label.scale.set(3.6, 0.9, 1);
+					group.add(label);
+
+					group.position.set(x, y, z);
+					group.rotation.y = Math.atan2(x, z);
+					scene.add(group);
+					cameraOccluders.push(frame);
+					portals.push({
+						targetId,
+						group,
+						core,
+						frame,
+						label,
+						color: coreColor,
+						pulseOffset: Math.random() * Math.PI * 2
+					});
+				});
+			};
+
+			const spawnPortalBurst = (position: THREE.Vector3, color: THREE.Color) => {
+				portalParticleMat.color.copy(color);
+				portalParticleMat.emissive.copy(color);
+				const count = 80;
+				for (let i = 0; i < count; i += 1) {
+					const mesh = new THREE.Mesh(portalParticleGeo, portalParticleMat);
+					mesh.position.copy(position);
+					const velocity = new THREE.Vector3(
+						THREE.MathUtils.randFloatSpread(2),
+						THREE.MathUtils.randFloat(0.8, 2.8),
+						THREE.MathUtils.randFloatSpread(2)
+					)
+						.normalize()
+						.multiplyScalar(THREE.MathUtils.randFloat(2.8, 5.4));
+					portalParticles.push({ mesh, velocity, life: THREE.MathUtils.randFloat(0.7, 1.4) });
+					scene.add(mesh);
+				}
+			};
+
+			const triggerPortal = (portal: Portal) => {
+				if (portalTransition || portalCooldown > 0) {
+					return;
+				}
+				portalTransition = { targetId: portal.targetId, timer: 0.7 };
+				playPortalSound();
+				spawnPortalBurst(player.position, portal.color);
+				spawnPortalBurst(portal.group.position, portal.color);
+			};
+
+			const applyWorld = (worldDef: WorldDefinition, resetPlayer = true) => {
+				currentWorld = worldDef;
+				worldLabel = worldDef.name;
+				gravity = worldDef.gravity;
+				world.gravity = { x: 0, y: gravity, z: 0 };
+				scene.background = new THREE.Color(worldDef.skyColor);
+				scene.fog = new THREE.Fog(worldDef.fogColor, worldDef.fogNear, worldDef.fogFar);
+				hemiLight.color.setHex(worldDef.light.hemiSky);
+				hemiLight.groundColor.setHex(worldDef.light.hemiGround);
+				hemiLight.intensity = worldDef.light.hemiIntensity;
+				dirLight.color.setHex(worldDef.light.dirColor);
+				dirLight.intensity = worldDef.light.dirIntensity;
+				dirLight.position.set(...worldDef.light.dirPos);
+				switchBgm(worldDef.music.url, worldDef.music.volume);
+				clearChunks();
+				for (const block of fallingBlocks) {
+					removeBlock(block);
+				}
+				fallingBlocks.length = 0;
+				blockByCollider.clear();
+				for (const particle of particles) {
+					scene.remove(particle.mesh);
+				}
+				particles.length = 0;
+				for (const particle of portalParticles) {
+					scene.remove(particle.mesh);
+				}
+				portalParticles.length = 0;
+				pendingDetonations.length = 0;
+				buildPortals();
+				if (resetPlayer) {
+					const spawnHeight = getHeightAt(0, 0);
+					playerBody.setNextKinematicTranslation({ x: 0, y: spawnHeight, z: 0 });
+					player.position.set(0, spawnHeight, 0);
+					verticalVelocity = 0;
+					grounded = false;
+				}
+				syncChunks(player.position.x, player.position.z, true);
+				portalCooldown = 1.1;
+			};
 
 			const spawnFallingBlock = () => {
-				const spawnX = THREE.MathUtils.randFloat(-half + 2, half - 2);
-				const spawnZ = THREE.MathUtils.randFloat(-half + 2, half - 2);
-				const spawnY = THREE.MathUtils.randFloat(10, 16);
-				const isTnt = Math.random() < 0.28;
-				const block = new THREE.Mesh(fallingBlockGeo, isTnt ? tntMats : stoneMats);
+				const radius = 10;
+				const spawnX = player.position.x + THREE.MathUtils.randFloatSpread(radius * 2);
+				const spawnZ = player.position.z + THREE.MathUtils.randFloatSpread(radius * 2);
+				const surface = getHeightAt(Math.round(spawnX), Math.round(spawnZ));
+				const spawnY = surface + THREE.MathUtils.randFloat(8, 16);
+				const isTnt = Math.random() < 0.24;
+				const baseMats =
+					currentWorld.id === 'mars'
+						? marsRockMats
+						: currentWorld.id === 'moon'
+							? moonDustMats
+							: stoneMats;
+				const block = new THREE.Mesh(fallingBlockGeo, isTnt ? tntMats : baseMats);
 				block.position.set(spawnX, spawnY, spawnZ);
 				cameraOccluders.push(block);
 				scene.add(block);
@@ -624,21 +1287,44 @@
 			const clock = new THREE.Clock();
 			let frame = 0;
 			let spawnTimer = 0.6;
-			const gravity = -18;
 			let verticalVelocity = 0;
 			let grounded = false;
-			
+
+			applyWorld(currentWorld, false);
 
 			const tick = () => {
 				const delta = Math.min(clock.getDelta(), 0.05);
 				const time = clock.elapsedTime;
+				updateAudio(delta);
+
+				if (portalCooldown > 0) {
+					portalCooldown = Math.max(0, portalCooldown - delta);
+				}
+				if (portalTransition) {
+					portalTransition.timer -= delta;
+					if (portalTransition.timer <= 0) {
+						const target = worldById.get(portalTransition.targetId);
+						if (target) {
+							applyWorld(target, true);
+						}
+						portalTransition = null;
+					}
+				}
+				const isTransitioning = portalTransition !== null;
+				if (isTransitioning) {
+					input.jump = false;
+				}
 
 				const analogTurn = moveAxis.x;
 				const analogMove = -moveAxis.y;
-				const turnInput = -((input.left ? -1 : 0) + (input.right ? 1 : 0) + analogTurn);
+				const turnInput = isTransitioning
+					? 0
+					: -((input.left ? -1 : 0) + (input.right ? 1 : 0) + analogTurn);
 
 				let moveInput = analogMove * 0.9;
-				if (input.forward) {
+				if (isTransitioning) {
+					moveInput = 0;
+				} else if (input.forward) {
 					moveInput = 1.2;
 				} else if (input.back) {
 					moveInput = -0.4;
@@ -684,12 +1370,6 @@
 					if (!block || block.removed) {
 						continue;
 					}
-					console.log('[cc-collision]', {
-						handle: collider.handle,
-						isTnt: block.isTnt,
-						normal: collision?.normal1,
-						pos: block.mesh.position.toArray()
-					});
 					if (block.isTnt) {
 						tntHits.add(block);
 					} else {
@@ -704,12 +1384,9 @@
 					z: currentPos.z + actualMovement.z
 				};
 
-				const clampLimit = half - 2;
-				nextPos.x = THREE.MathUtils.clamp(nextPos.x, -clampLimit, clampLimit);
-				nextPos.z = THREE.MathUtils.clamp(nextPos.z, -clampLimit, clampLimit);
-
 				playerBody.setNextKinematicTranslation(nextPos);
 				player.position.set(nextPos.x, nextPos.y, nextPos.z);
+				syncChunks(player.position.x, player.position.z);
 
 				grounded = controller.computedGrounded();
 				if (grounded && verticalVelocity < 0) {
@@ -752,6 +1429,24 @@
 				}
 
 				camera.lookAt(target);
+
+				for (const portal of portals) {
+					const coreMat = portal.core.material as THREE.MeshStandardMaterial;
+					coreMat.opacity = 0.6 + Math.sin(time * 2.4 + portal.pulseOffset) * 0.15;
+					portal.core.rotation.z += delta * 0.6;
+				}
+
+				if (!portalTransition && portalCooldown <= 0) {
+					const triggerRadius = 1.6;
+					for (const portal of portals) {
+						const dx = player.position.x - portal.group.position.x;
+						const dz = player.position.z - portal.group.position.z;
+						if (dx * dx + dz * dz <= triggerRadius * triggerRadius) {
+							triggerPortal(portal);
+							break;
+						}
+					}
+				}
 
 				spawnTimer -= delta;
 				if (spawnTimer <= 0) {
@@ -805,6 +1500,17 @@
 					if (particle.life <= 0) {
 						scene.remove(particle.mesh);
 						particles.splice(i, 1);
+					}
+				}
+
+				for (let i = portalParticles.length - 1; i >= 0; i -= 1) {
+					const particle = portalParticles[i];
+					particle.velocity.y += gravity * 0.15 * delta;
+					particle.mesh.position.addScaledVector(particle.velocity, delta);
+					particle.life -= delta;
+					if (particle.life <= 0) {
+						scene.remove(particle.mesh);
+						portalParticles.splice(i, 1);
 					}
 				}
 
@@ -863,20 +1569,41 @@
 				blockGeo.dispose();
 				fallingBlockGeo.dispose();
 				particleGeo.dispose();
+				portalParticleGeo.dispose();
+				portalFrameGeo.dispose();
+				portalCoreGeo.dispose();
 				bodyMat.dispose();
 				limbMat.dispose();
 				grassTopMat.dispose();
 				grassSideMat.dispose();
 				dirtMat.dispose();
 				stoneMat.dispose();
+				cobbleMat.dispose();
+				woodPlankMat.dispose();
+				redWoodPlankMat.dispose();
+				sandstoneMat.dispose();
+				obsidianMat.dispose();
+				marsSandMat.dispose();
+				marsRockMat.dispose();
+				moonDustMat.dispose();
+				portalFrameMat.dispose();
 				tntTopMat.dispose();
 				tntSideMat.dispose();
 				tntBottomMat.dispose();
 				particleMat.dispose();
+				portalParticleMat.dispose();
 				grassTopTex.dispose();
 				grassSideTex.dispose();
 				dirtTex.dispose();
 				stoneTex.dispose();
+				cobbleTex.dispose();
+				woodPlankTex.dispose();
+				redWoodPlankTex.dispose();
+				sandstoneTex.dispose();
+				obsidianTex.dispose();
+				marsSandTex.dispose();
+				marsRockTex.dispose();
+				moonDustTex.dispose();
 				tntTopTex.dispose();
 				tntSideTex.dispose();
 				tntBottomTex.dispose();
@@ -887,9 +1614,8 @@
 				(armLeft.geometry as THREE.BufferGeometry).dispose();
 				(armRight.geometry as THREE.BufferGeometry).dispose();
 
-				for (const mesh of terrainMeshes) {
-					scene.remove(mesh);
-				}
+				clearChunks();
+				clearPortals();
 				cameraOccluders.length = 0;
 
 				for (const block of fallingBlocks) {
@@ -899,9 +1625,16 @@
 				for (const particle of particles) {
 					scene.remove(particle.mesh);
 				}
+				for (const particle of portalParticles) {
+					scene.remove(particle.mesh);
+				}
 				pendingDetonations.length = 0;
 				world.removeRigidBody(playerBody);
 				world.removeCharacterController(controller);
+
+				for (const audio of bgmCache.values()) {
+					audio.pause();
+				}
 
 				renderer.dispose();
 			};
@@ -917,7 +1650,7 @@
 </script>
 
 <svelte:head>
-	<title>Runner Field</title>
+	<title>Portal Biomes</title>
 	<link rel="preconnect" href="https://fonts.googleapis.com" />
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 	<link
@@ -928,8 +1661,9 @@
 
 <div class="page">
 	<div class="hud">
-		<h1>Runner Field</h1>
-		<p>W / A / S / D or Arrow keys + mouse drag. Space to jump. Touch: left stick move, drag anywhere to look, tap Jump.</p>
+		<h1>Portal Biomes</h1>
+		<div class="status">World: {worldLabel}</div>
+		<p>Walk into a portal to swap worlds. W / A / S / D or Arrow keys + mouse drag. Space to jump. Touch: left stick move, drag anywhere to look, tap Jump.</p>
 	</div>
 	<div class="scene" bind:this={container}></div>
 	<div class="touch-controls">
@@ -1000,6 +1734,14 @@
 		letter-spacing: 0.04em;
 		text-transform: uppercase;
 		color: #f9d18c;
+	}
+
+	.hud .status {
+		font-size: 12px;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+		color: #b7f1ff;
+		margin-bottom: 6px;
 	}
 
 	.hud p {
