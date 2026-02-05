@@ -1,12 +1,64 @@
-<script lang="ts">
-	import { onMount } from 'svelte';
-	import * as THREE from 'three';
-	import RAPIER from '@dimforge/rapier3d-compat';
+	<script lang="ts">
+		import { onMount } from 'svelte';
+		import * as THREE from 'three';
+		import RAPIER from '@dimforge/rapier3d-compat';
 
-	let container: HTMLDivElement | null = null;
-	let joystickEl: HTMLDivElement | null = null;
-	let joystickThumbEl: HTMLDivElement | null = null;
-	let jumpEl: HTMLDivElement | null = null;
+		type BlockType =
+			| 'grass'
+			| 'dirt'
+			| 'stone'
+			| 'cobble'
+			| 'wood'
+			| 'redwood'
+			| 'sandstone'
+			| 'obsidian'
+			| 'marsSand'
+			| 'marsRock'
+			| 'moonDust'
+			| 'sand'
+			| 'gravel'
+			| 'water'
+			| 'lava'
+			| 'log'
+			| 'leaves'
+			| 'glass'
+			| 'brick'
+			| 'door'
+			| 'coalOre'
+			| 'ironOre'
+			| 'mossyCobble'
+			| 'clay'
+			| 'snow'
+			| 'ice'
+			| 'netherrack';
+
+		const HOTBAR_SLOTS = 9;
+
+		let blockIcons: Partial<Record<BlockType, string>> = {};
+		let inventory: Partial<Record<BlockType, number>> = {};
+		let hotbar: Array<BlockType | null> = Array.from({ length: HOTBAR_SLOTS }, () => null);
+		let selectedHotbar = 0;
+
+		const getInventoryCount = (type: BlockType) => inventory[type] ?? 0;
+		const getBlockIcon = (type: BlockType) => blockIcons[type] ?? '';
+
+		const addToInventory = (type: BlockType, amount = 1) => {
+			const nextCount = (inventory[type] ?? 0) + amount;
+			inventory = { ...inventory, [type]: nextCount };
+			if (!hotbar.includes(type)) {
+				const emptyIndex = hotbar.findIndex((slot) => slot === null);
+				if (emptyIndex >= 0) {
+					hotbar = hotbar.map((slot, idx) => (idx === emptyIndex ? type : slot));
+				} else {
+					hotbar = hotbar.map((slot, idx) => (idx === selectedHotbar ? type : slot));
+				}
+			}
+		};
+
+		let container: HTMLDivElement | null = null;
+		let joystickEl: HTMLDivElement | null = null;
+		let joystickThumbEl: HTMLDivElement | null = null;
+		let jumpEl: HTMLDivElement | null = null;
 	let worldLabel = 'Verdant Expanse';
 	let worldJump: ((id: 'earth' | 'mars' | 'moon') => void) | null = null;
 
@@ -417,14 +469,52 @@
 				ctx.textBaseline = 'middle';
 				ctx.fillText('TNT', size / 2, size * 0.5);
 			});
-			const tntBottomTex = createCanvasTexture((ctx, size) => {
-				ctx.fillStyle = '#7a1e1e';
-				ctx.fillRect(0, 0, size, size);
-			});
+				const tntBottomTex = createCanvasTexture((ctx, size) => {
+					ctx.fillStyle = '#7a1e1e';
+					ctx.fillRect(0, 0, size, size);
+				});
 
-			const grassTopMat = new THREE.MeshStandardMaterial({ map: grassTopTex, roughness: 0.95 });
-			const grassSideMat = new THREE.MeshStandardMaterial({ map: grassSideTex, roughness: 0.95 });
-			const dirtMat = new THREE.MeshStandardMaterial({ map: dirtTex, roughness: 1 });
+				const iconFromTexture = (texture: THREE.Texture) => {
+					const image = texture.image;
+					if (image instanceof HTMLCanvasElement) {
+						return image.toDataURL();
+					}
+					return '';
+				};
+
+				blockIcons = {
+					grass: '/textures/grass_top.png',
+					dirt: '/textures/dirt.png',
+					stone: '/textures/stone.png',
+					cobble: '/textures/cobble.png',
+					wood: '/textures/wood_plank.png',
+					redwood: '/textures/red_wood_plank.png',
+					sandstone: '/textures/sandstone.png',
+					obsidian: '/textures/obsidian.png',
+					marsSand: '/textures/mars_sand.png',
+					marsRock: '/textures/mars_rock.png',
+					moonDust: '/textures/moon_dust.png',
+					sand: iconFromTexture(sandTex),
+					gravel: iconFromTexture(gravelTex),
+					water: iconFromTexture(waterTex),
+					lava: iconFromTexture(lavaTex),
+					log: iconFromTexture(logSideTex),
+					leaves: iconFromTexture(leavesTex),
+					glass: iconFromTexture(glassTex),
+					brick: iconFromTexture(brickTex),
+					door: iconFromTexture(doorTex),
+					coalOre: iconFromTexture(coalOreTex),
+					ironOre: iconFromTexture(ironOreTex),
+					mossyCobble: iconFromTexture(mossyCobbleTex),
+					clay: iconFromTexture(clayTex),
+					snow: iconFromTexture(snowTex),
+					ice: iconFromTexture(iceTex),
+					netherrack: iconFromTexture(netherrackTex)
+				};
+
+				const grassTopMat = new THREE.MeshStandardMaterial({ map: grassTopTex, roughness: 0.95 });
+				const grassSideMat = new THREE.MeshStandardMaterial({ map: grassSideTex, roughness: 0.95 });
+				const dirtMat = new THREE.MeshStandardMaterial({ map: dirtTex, roughness: 1 });
 			const stoneMat = new THREE.MeshStandardMaterial({ map: stoneTex, roughness: 1 });
 			const cobbleMat = new THREE.MeshStandardMaterial({ map: cobbleTex, roughness: 1 });
 			const woodPlankMat = new THREE.MeshStandardMaterial({ map: woodPlankTex, roughness: 0.9 });
@@ -510,10 +600,23 @@
 			const blockGeo = new THREE.BoxGeometry(1, 1, 1);
 			const fallingBlockGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
 			const particleGeo = new THREE.BoxGeometry(0.08, 0.08, 0.08);
-			const portalParticleGeo = new THREE.IcosahedronGeometry(0.07, 0);
-			const portalFrameGeo = new THREE.TorusGeometry(1, 0.12, 12, 40);
-			const portalCoreGeo = new THREE.CircleGeometry(0.88, 32);
-			const uniformMats = (mat: THREE.MeshStandardMaterial) => [mat, mat, mat, mat, mat, mat];
+				const portalParticleGeo = new THREE.IcosahedronGeometry(0.07, 0);
+				const portalFrameGeo = new THREE.TorusGeometry(1, 0.12, 12, 40);
+				const portalCoreGeo = new THREE.CircleGeometry(0.88, 32);
+
+				const blockHighlightMat = new THREE.MeshBasicMaterial({
+					color: 0xffffff,
+					wireframe: true,
+					transparent: true,
+					opacity: 0.55,
+					depthTest: false
+				});
+				const blockHighlight = new THREE.Mesh(new THREE.BoxGeometry(1.02, 1.02, 1.02), blockHighlightMat);
+				blockHighlight.visible = false;
+				blockHighlight.renderOrder = 10;
+				scene.add(blockHighlight);
+
+				const uniformMats = (mat: THREE.MeshStandardMaterial) => [mat, mat, mat, mat, mat, mat];
 			const grassMats = [grassSideMat, grassSideMat, grassTopMat, dirtMat, grassSideMat, grassSideMat];
 			const dirtMats = uniformMats(dirtMat);
 			const stoneMats = uniformMats(stoneMat);
@@ -570,14 +673,12 @@
 				snow: snowMats,
 				ice: iceMats,
 				netherrack: netherrackMats
-			} as const;
+				} as const;
 
-			type BlockType = keyof typeof blockMats;
-
-			type WorldDefinition = {
-				id: 'earth' | 'mars' | 'moon';
-				name: string;
-				seed: number;
+				type WorldDefinition = {
+					id: 'earth' | 'mars' | 'moon';
+					name: string;
+					seed: number;
 				skyColor: string;
 				fogColor: string;
 				fogNear: number;
@@ -628,13 +729,30 @@
 					hemiIntensity: number;
 					dirColor: number;
 					dirIntensity: number;
-					dirPos: [number, number, number];
+						dirPos: [number, number, number];
+					};
 				};
-			};
 
-			const worlds: WorldDefinition[] = [
-				{
-					id: 'earth',
+				type WorldId = WorldDefinition['id'];
+
+				type WorldEdits = {
+					removed: Set<string>;
+				};
+
+				const worldEdits = new Map<WorldId, WorldEdits>();
+				const getWorldEdits = (worldId: WorldId) => {
+					const existing = worldEdits.get(worldId);
+					if (existing) return existing;
+					const edits: WorldEdits = { removed: new Set() };
+					worldEdits.set(worldId, edits);
+					return edits;
+				};
+
+				const blockKey = (x: number, y: number, z: number) => `${x},${y},${z}`;
+
+				const worlds: WorldDefinition[] = [
+					{
+						id: 'earth',
 					name: 'Verdant Expanse',
 					seed: 142857,
 					skyColor: '#7ab3ff',
@@ -818,11 +936,12 @@
 
 			const world = new RAPIER.World({ x: 0, y: gravity, z: 0 });
 
-			const chunkSize = 16;
-			const chunkRadius = 3;
-			const cameraOccluders: THREE.Object3D[] = [];
-			const blockTypeKeys = Object.keys(blockMats) as BlockType[];
-			const chunkMatrix = new THREE.Matrix4();
+				const chunkSize = 16;
+				const chunkRadius = 3;
+				const cameraOccluders: THREE.Object3D[] = [];
+				const mineableMeshes: THREE.Object3D[] = [];
+				const blockTypeKeys = Object.keys(blockMats) as BlockType[];
+				const chunkMatrix = new THREE.Matrix4();
 
 			type Chunk = {
 				key: string;
@@ -1518,13 +1637,14 @@
 				}
 				const chunkMinX = cx * chunkSize;
 				const chunkMinZ = cz * chunkSize;
-				const positionsByType: Record<BlockType, number[]> = {} as Record<BlockType, number[]>;
-				for (const type of blockTypeKeys) {
-					positionsByType[type] = [];
-				}
+					const positionsByType: Record<BlockType, number[]> = {} as Record<BlockType, number[]>;
+					for (const type of blockTypeKeys) {
+						positionsByType[type] = [];
+					}
+					const removedBlocks = getWorldEdits(currentWorld.id).removed;
 
-				const waterLevel = currentWorld.fluids.waterLevel;
-				const lavaLevel = currentWorld.fluids.lavaLevel;
+					const waterLevel = currentWorld.fluids.waterLevel;
+					const lavaLevel = currentWorld.fluids.lavaLevel;
 				const flatTarget = new Int16Array(chunkSize * chunkSize);
 				flatTarget.fill(-1);
 				const topOverride: (BlockType | null)[] = new Array(chunkSize * chunkSize).fill(null);
@@ -1580,15 +1700,18 @@
 					}
 				};
 
-				const emitSolidBlock = (x: number, y: number, z: number, type: BlockType, solid = true) => {
-					if (x < chunkMinX || x >= chunkMinX + chunkSize || z < chunkMinZ || z >= chunkMinZ + chunkSize) {
-						return;
-					}
-					positionsByType[type].push(x, y + 0.5, z);
-					if (solid && isSolidBlockType(type)) {
-						solidBlockColliders.push(x, y + 0.5, z);
-					}
-				};
+					const emitSolidBlock = (x: number, y: number, z: number, type: BlockType, solid = true) => {
+						if (x < chunkMinX || x >= chunkMinX + chunkSize || z < chunkMinZ || z >= chunkMinZ + chunkSize) {
+							return;
+						}
+						if (removedBlocks.has(blockKey(x, y, z))) {
+							return;
+						}
+						positionsByType[type].push(x, y + 0.5, z);
+						if (solid && isSolidBlockType(type)) {
+							solidBlockColliders.push(x, y + 0.5, z);
+						}
+					};
 
 				const emitHouse = (plan: HousePlan) => {
 					const baseX = plan.x;
@@ -1940,15 +2063,27 @@
 						const isVolcanic = lavaStrength > 0.25 || info.biome.id === 'volcanic';
 						const useLava = lavaLevel > 0 && isVolcanic && height < lavaLevel;
 
-						const foundationFrom = foundationStart[idx] >= 0 ? foundationStart[idx] : -1;
-						const foundationTo = flatTarget[idx] >= 0 ? flatTarget[idx] : -1;
-						const foundationMat = foundationMaterial[idx];
+							const foundationFrom = foundationStart[idx] >= 0 ? foundationStart[idx] : -1;
+							const foundationTo = flatTarget[idx] >= 0 ? flatTarget[idx] : -1;
+							const foundationMat = foundationMaterial[idx];
 
-						for (let y = 0; y < height; y += 1) {
-							let blockType: BlockType;
-							if (foundationFrom >= 0 && foundationTo >= 0 && foundationMat && y >= foundationFrom && y < foundationTo - 1) {
-								blockType = foundationMat;
-							} else {
+							const terrainColliderLayers = 3;
+							const topLayerStart = Math.max(0, height - terrainColliderLayers);
+							if (height > 0 && topLayerStart > 0) {
+								world.createCollider(
+									RAPIER.ColliderDesc.cuboid(0.5, topLayerStart / 2, 0.5).setTranslation(ix, topLayerStart / 2, iz),
+									chunkBody
+								);
+							}
+
+							for (let y = 0; y < height; y += 1) {
+								if (removedBlocks.has(blockKey(worldX, y, worldZ))) {
+									continue;
+								}
+								let blockType: BlockType;
+								if (foundationFrom >= 0 && foundationTo >= 0 && foundationMat && y >= foundationFrom && y < foundationTo - 1) {
+									blockType = foundationMat;
+								} else {
 								blockType = pickBlockType(
 									info.biome,
 									worldX,
@@ -1962,11 +2097,17 @@
 									info.humidity
 								);
 							}
-							if (y === height - 1 && topOverride[idx]) {
-								blockType = topOverride[idx] as BlockType;
+								if (y === height - 1 && topOverride[idx]) {
+									blockType = topOverride[idx] as BlockType;
+								}
+								positionsByType[blockType].push(worldX, y + 0.5, worldZ);
+								if (y >= topLayerStart && isSolidBlockType(blockType)) {
+									world.createCollider(
+										RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.5).setTranslation(ix, y + 0.5, iz),
+										chunkBody
+									);
+								}
 							}
-							positionsByType[blockType].push(worldX, y + 0.5, worldZ);
-						}
 
 						if (useLava) {
 							for (let y = height; y < lavaLevel; y += 1) {
@@ -2046,14 +2187,8 @@
 							}
 						}
 
-						if (height > 0) {
-							world.createCollider(
-								RAPIER.ColliderDesc.cuboid(0.5, height / 2, 0.5).setTranslation(ix, height / 2, iz),
-								chunkBody
-							);
 						}
 					}
-				}
 
 				for (let i = 0; i < solidBlockColliders.length; i += 3) {
 					const x = solidBlockColliders[i];
@@ -2066,53 +2201,130 @@
 				}
 
 				const meshes: THREE.InstancedMesh[] = [];
-				for (const type of blockTypeKeys) {
-					const positions = positionsByType[type];
-					if (!positions.length) {
-						continue;
-					}
-					const mesh = new THREE.InstancedMesh(blockGeo, blockMats[type], positions.length / 3);
-					if (type === 'water') {
-						mesh.renderOrder = 2;
-					} else if (type === 'lava') {
-						mesh.renderOrder = 1;
+					for (const type of blockTypeKeys) {
+						const positions = positionsByType[type];
+						if (!positions.length) {
+							continue;
+						}
+						const mesh = new THREE.InstancedMesh(blockGeo, blockMats[type], positions.length / 3);
+						mesh.userData = { blockType: type, chunkKey: key };
+						if (type === 'water') {
+							mesh.renderOrder = 2;
+						} else if (type === 'lava') {
+							mesh.renderOrder = 1;
 					}
 					for (let i = 0; i < positions.length; i += 3) {
 						chunkMatrix.makeTranslation(positions[i], positions[i + 1], positions[i + 2]);
 						mesh.setMatrixAt(i / 3, chunkMatrix);
 					}
 					mesh.instanceMatrix.needsUpdate = true;
-					mesh.computeBoundingSphere();
-					scene.add(mesh);
-					if (type !== 'water' && type !== 'door') {
-						cameraOccluders.push(mesh);
+						mesh.computeBoundingSphere();
+						scene.add(mesh);
+						if (type !== 'water' && type !== 'lava') {
+							mineableMeshes.push(mesh);
+						}
+						if (type !== 'water' && type !== 'door') {
+							cameraOccluders.push(mesh);
+						}
+						meshes.push(mesh);
 					}
-					meshes.push(mesh);
-				}
 
 				chunks.set(key, { key, x: cx, z: cz, meshes, body: chunkBody });
 			};
 
-			const removeChunk = (chunk: Chunk) => {
-				for (const mesh of chunk.meshes) {
-					scene.remove(mesh);
-					const occIndex = cameraOccluders.indexOf(mesh);
-					if (occIndex >= 0) {
-						cameraOccluders.splice(occIndex, 1);
+				const removeChunk = (chunk: Chunk) => {
+					for (const mesh of chunk.meshes) {
+						scene.remove(mesh);
+						const mineIndex = mineableMeshes.indexOf(mesh);
+						if (mineIndex >= 0) {
+							mineableMeshes.splice(mineIndex, 1);
+						}
+						const occIndex = cameraOccluders.indexOf(mesh);
+						if (occIndex >= 0) {
+							cameraOccluders.splice(occIndex, 1);
+						}
 					}
-				}
-				world.removeRigidBody(chunk.body);
-			};
+					world.removeRigidBody(chunk.body);
+				};
 
-			const clearChunks = () => {
-				for (const chunk of chunks.values()) {
-					removeChunk(chunk);
-				}
-				chunks.clear();
-			};
+				const clearChunks = () => {
+					for (const chunk of chunks.values()) {
+						removeChunk(chunk);
+					}
+					chunks.clear();
+				};
 
-			let lastChunkX = Number.NaN;
-			let lastChunkZ = Number.NaN;
+				const rebuildChunkAt = (worldX: number, worldZ: number) => {
+					const cx = Math.floor(worldX / chunkSize);
+					const cz = Math.floor(worldZ / chunkSize);
+					const key = `${cx},${cz}`;
+					const existing = chunks.get(key);
+					if (existing) {
+						removeChunk(existing);
+						chunks.delete(key);
+					}
+					buildChunk(cx, cz);
+				};
+
+				type BlockTarget = {
+					x: number;
+					y: number;
+					z: number;
+					type: BlockType;
+					distance: number;
+				};
+
+				const isMineableType = (type: BlockType) => type !== 'water' && type !== 'lava';
+
+				const blockBreakSeconds: Record<BlockType, number> = {
+					grass: 0.38,
+					dirt: 0.38,
+					stone: 0.95,
+					cobble: 0.85,
+					wood: 0.65,
+					redwood: 0.7,
+					sandstone: 0.75,
+					obsidian: 1.25,
+					marsSand: 0.4,
+					marsRock: 0.9,
+					moonDust: 0.4,
+					sand: 0.35,
+					gravel: 0.45,
+					water: 999,
+					lava: 999,
+					log: 0.75,
+					leaves: 0.18,
+					glass: 0.32,
+					brick: 0.85,
+					door: 0.45,
+					coalOre: 1.05,
+					ironOre: 1.1,
+					mossyCobble: 0.9,
+					clay: 0.5,
+					snow: 0.16,
+					ice: 0.55,
+					netherrack: 0.7
+				};
+
+				const breakTargetBlock = (target: BlockTarget) => {
+					if (!isMineableType(target.type)) {
+						return;
+					}
+					if (target.y <= 0) {
+						return;
+					}
+					const edits = getWorldEdits(currentWorld.id);
+					const key = blockKey(target.x, target.y, target.z);
+					if (edits.removed.has(key)) {
+						return;
+					}
+					edits.removed.add(key);
+					addToInventory(target.type, 1);
+					rebuildChunkAt(target.x, target.z);
+				};
+
+				let lastChunkX = Number.NaN;
+				let lastChunkZ = Number.NaN;
 
 			const syncChunks = (worldX: number, worldZ: number, force = false) => {
 				const cx = Math.floor(worldX / chunkSize);
@@ -2486,9 +2698,9 @@
 				jump: false
 			};
 
-			const handleKeyDown = (event: KeyboardEvent) => {
-				ensureAudio();
-				switch (event.code) {
+				const handleKeyDown = (event: KeyboardEvent) => {
+					ensureAudio();
+					switch (event.code) {
 					case 'KeyW':
 					case 'ArrowUp':
 						input.forward = true;
@@ -2505,13 +2717,24 @@
 					case 'ArrowRight':
 						input.right = true;
 						break;
-					case 'Space':
-						input.jump = true;
-						break;
-					default:
-						break;
-				}
-			};
+						case 'Space':
+							input.jump = true;
+							break;
+						case 'Digit1':
+						case 'Digit2':
+						case 'Digit3':
+						case 'Digit4':
+						case 'Digit5':
+						case 'Digit6':
+						case 'Digit7':
+						case 'Digit8':
+						case 'Digit9':
+							selectedHotbar = Math.min(HOTBAR_SLOTS - 1, Math.max(0, Number(event.code.replace('Digit', '')) - 1));
+							break;
+						default:
+							break;
+					}
+				};
 
 			const handleKeyUp = (event: KeyboardEvent) => {
 				switch (event.code) {
@@ -2543,24 +2766,28 @@
 			window.addEventListener('keyup', handleKeyUp);
 
 			const moveAxis = new THREE.Vector2();
-			const pointerState = {
-				lookYaw: 0,
-				lookPitch: 0,
-				mouseDown: false,
-				lastMouseX: 0,
-				lastMouseY: 0
-			};
+				const pointerState = {
+					lookYaw: 0,
+					lookPitch: 0,
+					mouseDown: false,
+					lastMouseX: 0,
+					lastMouseY: 0
+				};
 
-			const handleMouseDown = (event: PointerEvent) => {
-				if (event.pointerType !== 'mouse' || event.button !== 0) {
-					return;
-				}
-				ensureAudio();
-				pointerState.mouseDown = true;
-				pointerState.lastMouseX = event.clientX;
-				pointerState.lastMouseY = event.clientY;
-				if (event.target instanceof HTMLElement) {
-					event.target.setPointerCapture(event.pointerId);
+				let miningDown = false;
+				let miningPointerId: number | null = null;
+
+				const handleMouseDown = (event: PointerEvent) => {
+					if (event.pointerType !== 'mouse' || event.button !== 0) {
+						return;
+					}
+					ensureAudio();
+					pointerState.mouseDown = true;
+					miningDown = true;
+					pointerState.lastMouseX = event.clientX;
+					pointerState.lastMouseY = event.clientY;
+					if (event.target instanceof HTMLElement) {
+						event.target.setPointerCapture(event.pointerId);
 				}
 			};
 
@@ -2576,12 +2803,13 @@
 				pointerState.lookPitch += deltaY * 0.003;
 			};
 
-			const handleMouseUp = (event: PointerEvent) => {
-				if (event.pointerType !== 'mouse') {
-					return;
-				}
-				pointerState.mouseDown = false;
-			};
+				const handleMouseUp = (event: PointerEvent) => {
+					if (event.pointerType !== 'mouse') {
+						return;
+					}
+					pointerState.mouseDown = false;
+					miningDown = false;
+				};
 
 			renderer.domElement.addEventListener('pointerdown', handleMouseDown);
 			window.addEventListener('pointermove', handleMouseMove);
@@ -2673,20 +2901,22 @@
 				event.stopPropagation();
 			};
 
-			const handleLookDown = (event: PointerEvent) => {
-				if (event.pointerType === 'mouse') {
+				const handleLookDown = (event: PointerEvent) => {
+					if (event.pointerType === 'mouse') {
+						return;
+					}
+					if (event.target instanceof HTMLElement && event.target.closest('.touch-pad')) {
 					return;
 				}
-				if (event.target instanceof HTMLElement && event.target.closest('.touch-pad')) {
-					return;
-				}
-				ensureAudio();
-				lookState.pointerId = event.pointerId;
-				lookState.lastX = event.clientX;
-				lookState.lastY = event.clientY;
-				if (event.target instanceof HTMLElement) {
-					event.target.setPointerCapture(event.pointerId);
-				}
+					ensureAudio();
+					lookState.pointerId = event.pointerId;
+					miningPointerId = event.pointerId;
+					miningDown = true;
+					lookState.lastX = event.clientX;
+					lookState.lastY = event.clientY;
+					if (event.target instanceof HTMLElement) {
+						event.target.setPointerCapture(event.pointerId);
+					}
 				event.preventDefault();
 			};
 
@@ -2703,15 +2933,19 @@
 				event.preventDefault();
 			};
 
-			const handleLookUp = (event: PointerEvent) => {
-				if (event.pointerId != lookState.pointerId) {
-					return;
-				}
-				lookState.pointerId = null;
-				if (event.target instanceof HTMLElement) {
-					event.target.releasePointerCapture(event.pointerId);
-				}
-			};
+				const handleLookUp = (event: PointerEvent) => {
+					if (event.pointerId != lookState.pointerId) {
+						return;
+					}
+					lookState.pointerId = null;
+					if (event.pointerId === miningPointerId) {
+						miningDown = false;
+						miningPointerId = null;
+					}
+					if (event.target instanceof HTMLElement) {
+						event.target.releasePointerCapture(event.pointerId);
+					}
+				};
 
 			joystickEl?.addEventListener('pointerdown', handleJoystickDown, { passive: false });
 			joystickEl?.addEventListener('pointermove', handleJoystickMove, { passive: false });
@@ -2725,12 +2959,10 @@
 			renderer.domElement.addEventListener('pointerup', handleLookUp);
 			renderer.domElement.addEventListener('pointercancel', handleLookUp);
 
-			type WorldId = WorldDefinition['id'];
-
-			type Portal = {
-				targetId: WorldId;
-				group: THREE.Group;
-				core: THREE.Mesh;
+				type Portal = {
+					targetId: WorldId;
+					group: THREE.Group;
+					core: THREE.Mesh;
 				frame: THREE.Mesh;
 				label: THREE.Sprite;
 				color: THREE.Color;
@@ -3066,12 +3298,22 @@
 			const forwardBase = new THREE.Vector3(0, 0, -1);
 			const xAxis = new THREE.Vector3(1, 0, 0);
 			const headOffset = new THREE.Vector3(0, playerEyeHeight, 0);
-			const tempVec = new THREE.Vector3();
-			const tempVec2 = new THREE.Vector3();
-			const tempVec3 = new THREE.Vector3();
-			const raycaster = new THREE.Raycaster();
-			
-			const clock = new THREE.Clock();
+				const tempVec = new THREE.Vector3();
+				const tempVec2 = new THREE.Vector3();
+				const tempVec3 = new THREE.Vector3();
+				const raycaster = new THREE.Raycaster();
+				const mineRaycaster = new THREE.Raycaster();
+				const mineNdc = new THREE.Vector2(0, 0);
+				const mineMatrix = new THREE.Matrix4();
+				const minePos = new THREE.Vector3();
+				const maxMineDistance = 6.5;
+
+				let aimedBlock: BlockTarget | null = null;
+				let miningTargetKey: string | null = null;
+				let miningProgress = 0;
+				let miningRequired = 0;
+				
+				const clock = new THREE.Clock();
 			let frame = 0;
 			let spawnTimer = 0.6;
 			let verticalVelocity = 0;
@@ -3253,13 +3495,68 @@
 					cameraDistance = Math.min(cameraDistance, desiredDistance);
 					const adjustedWorld = tempVec2.copy(target).addScaledVector(toCamera, cameraDistance);
 					camera.position.copy(cameraRig.worldToLocal(adjustedWorld));
-				}
+					}
 
-				camera.lookAt(target);
+					camera.lookAt(target);
+					camera.updateMatrixWorld();
 
-				for (const portal of portals) {
-					const coreMat = portal.core.material as THREE.MeshStandardMaterial;
-					coreMat.opacity = 0.6 + Math.sin(time * 2.4 + portal.pulseOffset) * 0.15;
+					aimedBlock = null;
+					mineRaycaster.setFromCamera(mineNdc, camera);
+					mineRaycaster.far = maxMineDistance;
+					const mineHits = mineRaycaster.intersectObjects(mineableMeshes, false);
+					for (const hit of mineHits) {
+						const mesh = hit.object as THREE.InstancedMesh;
+						const type = mesh.userData?.blockType as BlockType | undefined;
+						if (!type || !isMineableType(type)) {
+							continue;
+						}
+						if (hit.instanceId == null) {
+							continue;
+						}
+						mesh.getMatrixAt(hit.instanceId, mineMatrix);
+						minePos.setFromMatrixPosition(mineMatrix);
+						const x = Math.round(minePos.x);
+						const y = Math.floor(minePos.y);
+						const z = Math.round(minePos.z);
+						aimedBlock = { x, y, z, type, distance: hit.distance };
+						break;
+					}
+
+					if (aimedBlock) {
+						blockHighlight.visible = true;
+						blockHighlight.position.set(aimedBlock.x, aimedBlock.y + 0.5, aimedBlock.z);
+					} else {
+						blockHighlight.visible = false;
+					}
+
+					if (!isTransitioning && miningDown && aimedBlock) {
+						const nextKey = blockKey(aimedBlock.x, aimedBlock.y, aimedBlock.z);
+						const required = blockBreakSeconds[aimedBlock.type] ?? 0.7;
+						if (nextKey !== miningTargetKey) {
+							miningTargetKey = nextKey;
+							miningProgress = 0;
+							miningRequired = required;
+						} else {
+							miningRequired = required;
+						}
+						miningProgress += delta;
+						const t = THREE.MathUtils.clamp(miningProgress / Math.max(0.01, miningRequired), 0, 1);
+						blockHighlightMat.opacity = 0.35 + t * 0.55;
+						if (miningProgress >= miningRequired) {
+							breakTargetBlock(aimedBlock);
+							miningProgress = 0;
+							miningTargetKey = null;
+						}
+					} else {
+						miningProgress = 0;
+						miningTargetKey = null;
+						miningRequired = 0;
+						blockHighlightMat.opacity = 0.55;
+					}
+
+					for (const portal of portals) {
+						const coreMat = portal.core.material as THREE.MeshStandardMaterial;
+						coreMat.opacity = 0.6 + Math.sin(time * 2.4 + portal.pulseOffset) * 0.15;
 					portal.core.rotation.z += delta * 0.6;
 				}
 
@@ -3397,12 +3694,15 @@
 				blockGeo.dispose();
 				fallingBlockGeo.dispose();
 				particleGeo.dispose();
-				portalParticleGeo.dispose();
-				portalFrameGeo.dispose();
-				portalCoreGeo.dispose();
-				bodyMat.dispose();
-				limbMat.dispose();
-				grassTopMat.dispose();
+					portalParticleGeo.dispose();
+					portalFrameGeo.dispose();
+					portalCoreGeo.dispose();
+					scene.remove(blockHighlight);
+					(blockHighlight.geometry as THREE.BufferGeometry).dispose();
+					blockHighlightMat.dispose();
+					bodyMat.dispose();
+					limbMat.dispose();
+					grassTopMat.dispose();
 				grassSideMat.dispose();
 				dirtMat.dispose();
 				stoneMat.dispose();
@@ -3532,25 +3832,40 @@
 	/>
 </svelte:head>
 
-<div class="page">
-	<div class="hud">
-		<h1>Portal Biomes</h1>
-		<div class="status">World: {worldLabel}</div>
-		<div class="world-buttons">
-			<button type="button" on:click={() => jumpWorld('earth')}>Earth</button>
-			<button type="button" on:click={() => jumpWorld('mars')}>Mars</button>
-			<button type="button" on:click={() => jumpWorld('moon')}>Moon</button>
+	<div class="page">
+		<div class="hud">
+			<h1>Portal Biomes</h1>
+			<div class="status">World: {worldLabel}</div>
+			<div class="world-buttons">
+				<button type="button" on:click={() => jumpWorld('earth')}>Earth</button>
+				<button type="button" on:click={() => jumpWorld('mars')}>Mars</button>
+				<button type="button" on:click={() => jumpWorld('moon')}>Moon</button>
+			</div>
+			<p>Walk into a portal to swap worlds. W / A / S / D or Arrow keys + mouse drag. Space to jump. Touch: left stick move, drag anywhere to look, tap Jump.</p>
 		</div>
-		<p>Walk into a portal to swap worlds. W / A / S / D or Arrow keys + mouse drag. Space to jump. Touch: left stick move, drag anywhere to look, tap Jump.</p>
-	</div>
-	<div class="scene" bind:this={container}></div>
-	<div class="touch-controls">
-		<div class="touch-pad joystick" bind:this={joystickEl}>
-			<div class="thumb" bind:this={joystickThumbEl}></div>
+		<div class="scene" bind:this={container}></div>
+		<div class="crosshair" aria-hidden="true"></div>
+		<div class="hotbar" aria-label="Backpack">
+			{#each hotbar as slot, idx}
+				<div class="hotbar-slot" class:selected={idx === selectedHotbar}>
+					{#if slot}
+						<div
+							class="hotbar-icon"
+							style={`background-image: url('${getBlockIcon(slot)}')`}
+							title={slot}
+						></div>
+						<div class="hotbar-count">{getInventoryCount(slot)}</div>
+					{/if}
+				</div>
+			{/each}
 		</div>
-		<div class="touch-pad jump" bind:this={jumpEl}>Jump</div>
+		<div class="touch-controls">
+			<div class="touch-pad joystick" bind:this={joystickEl}>
+				<div class="thumb" bind:this={joystickThumbEl}></div>
+			</div>
+			<div class="touch-pad jump" bind:this={jumpEl}>Jump</div>
+		</div>
 	</div>
-</div>
 
 <style>
 	:global(html, body) {
@@ -3652,17 +3967,103 @@
 		transform: translateY(1px);
 	}
 
-	.hud p {
-		margin: 0;
-		font-size: 13px;
-		opacity: 0.85;
-	}
+		.hud p {
+			margin: 0;
+			font-size: 13px;
+			opacity: 0.85;
+		}
 
-	.touch-controls {
-		position: fixed;
-		inset: 0;
-		padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-		pointer-events: none;
+		.crosshair {
+			position: absolute;
+			left: 50%;
+			top: 50%;
+			width: 16px;
+			height: 16px;
+			transform: translate(-50%, -50%);
+			z-index: 4;
+			pointer-events: none;
+		}
+
+		.crosshair::before,
+		.crosshair::after {
+			content: '';
+			position: absolute;
+			background: rgba(255, 250, 242, 0.92);
+			box-shadow: 0 0 0 1px rgba(6, 8, 10, 0.55);
+		}
+
+		.crosshair::before {
+			left: 50%;
+			top: 2px;
+			width: 2px;
+			height: 12px;
+			transform: translateX(-50%);
+		}
+
+		.crosshair::after {
+			top: 50%;
+			left: 2px;
+			width: 12px;
+			height: 2px;
+			transform: translateY(-50%);
+		}
+
+		.hotbar {
+			position: absolute;
+			left: 50%;
+			bottom: calc(16px + env(safe-area-inset-bottom));
+			transform: translateX(-50%);
+			z-index: 4;
+			pointer-events: none;
+			display: grid;
+			grid-auto-flow: column;
+			gap: 8px;
+			padding: 10px 12px;
+			border-radius: 16px;
+			background: rgba(12, 18, 22, 0.62);
+			backdrop-filter: blur(10px);
+			border: 1px solid rgba(143, 177, 185, 0.35);
+		}
+
+		.hotbar-slot {
+			width: 46px;
+			height: 46px;
+			border-radius: 12px;
+			background: rgba(8, 12, 15, 0.55);
+			border: 1px solid rgba(143, 177, 185, 0.35);
+			position: relative;
+			overflow: hidden;
+		}
+
+		.hotbar-slot.selected {
+			border-color: rgba(249, 209, 140, 0.9);
+			box-shadow: 0 0 0 2px rgba(249, 209, 140, 0.22);
+		}
+
+		.hotbar-icon {
+			position: absolute;
+			inset: 8px;
+			background-size: cover;
+			background-position: center;
+			image-rendering: pixelated;
+			filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.45));
+		}
+
+		.hotbar-count {
+			position: absolute;
+			right: 7px;
+			bottom: 5px;
+			font-size: 12px;
+			font-weight: 600;
+			color: rgba(255, 250, 242, 0.95);
+			text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7);
+		}
+
+		.touch-controls {
+			position: fixed;
+			inset: 0;
+			padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+			pointer-events: none;
 		display: none;
 		z-index: 3;
 	}
