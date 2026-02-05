@@ -94,7 +94,7 @@
 			const camera = new THREE.PerspectiveCamera(65, 1, 0.1, 420);
 			const cameraRig = new THREE.Group();
 			cameraRig.rotation.order = 'YXZ';
-			const baseCameraOffset = new THREE.Vector3(0, 4.6, 7.5);
+			const baseCameraOffset = new THREE.Vector3(2.4, 4.2, 7.6);
 			const defaultCameraDistance = baseCameraOffset.length();
 			let cameraDistance = defaultCameraDistance;
 			let cameraPitch = 0;
@@ -2308,19 +2308,20 @@
 
 				const breakTargetBlock = (target: BlockTarget) => {
 					if (!isMineableType(target.type)) {
-						return;
+						return false;
 					}
 					if (target.y <= 0) {
-						return;
+						return false;
 					}
 					const edits = getWorldEdits(currentWorld.id);
 					const key = blockKey(target.x, target.y, target.z);
 					if (edits.removed.has(key)) {
-						return;
+						return false;
 					}
 					edits.removed.add(key);
 					addToInventory(target.type, 1);
 					rebuildChunkAt(target.x, target.z);
+					return true;
 				};
 
 				let lastChunkX = Number.NaN;
@@ -2617,6 +2618,8 @@
 			const portalSfx = new Audio('/audio/portal.ogg');
 			portalSfx.preload = 'auto';
 			portalSfx.volume = 0.7;
+			let sfxCtx: AudioContext | null = null;
+			let breakNoise: AudioBuffer | null = null;
 
 			const getBgm = (url: string) => {
 				const cached = bgmCache.get(url);
@@ -2688,6 +2691,86 @@
 				const instance = portalSfx.cloneNode(true) as HTMLAudioElement;
 				instance.volume = portalSfx.volume;
 				instance.play().catch(() => {});
+			};
+
+			const ensureSfxContext = () => {
+				if (!audioUnlocked) {
+					return null;
+				}
+				const Ctor: typeof AudioContext | undefined =
+					window.AudioContext ?? ((window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
+				if (!Ctor) {
+					return null;
+				}
+				if (!sfxCtx) {
+					sfxCtx = new Ctor();
+					const length = Math.floor(sfxCtx.sampleRate * 0.14);
+					breakNoise = sfxCtx.createBuffer(1, length, sfxCtx.sampleRate);
+					const data = breakNoise.getChannelData(0);
+					for (let i = 0; i < length; i += 1) {
+						const t = i / Math.max(1, length - 1);
+						const env = Math.pow(1 - t, 2.25);
+						data[i] = (Math.random() * 2 - 1) * env;
+					}
+				}
+				if (sfxCtx.state === 'suspended') {
+					sfxCtx.resume().catch(() => {});
+				}
+				return sfxCtx;
+			};
+
+			const playBlockBreakSound = (type: BlockType) => {
+				const ctx = ensureSfxContext();
+				if (!ctx || !breakNoise) {
+					return;
+				}
+				const now = ctx.currentTime;
+				const gain = ctx.createGain();
+				const baseVolume =
+					type === 'glass' ? 0.085
+						: type === 'stone' || type === 'cobble' || type === 'obsidian' ? 0.12
+							: type === 'sand' || type === 'gravel' ? 0.095
+								: 0.105;
+				gain.gain.setValueAtTime(0.0001, now);
+				gain.gain.exponentialRampToValueAtTime(baseVolume, now + 0.008);
+				gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+
+				const filter = ctx.createBiquadFilter();
+				filter.type = 'bandpass';
+				const centerFreq =
+					type === 'glass' ? 1450
+						: type === 'wood' || type === 'log' || type === 'redwood' || type === 'door' ? 380
+							: type === 'sand' || type === 'gravel' || type === 'clay' ? 520
+								: 720;
+				filter.frequency.setValueAtTime(centerFreq, now);
+				filter.Q.setValueAtTime(0.9, now);
+
+				const src = ctx.createBufferSource();
+				src.buffer = breakNoise;
+				const rate = type === 'sand' || type === 'gravel' ? 0.85 : 1;
+				src.playbackRate.setValueAtTime(rate, now);
+				src.connect(filter);
+				filter.connect(gain);
+				gain.connect(ctx.destination);
+				src.start(now);
+				src.stop(now + 0.16);
+
+				const tickOsc = ctx.createOscillator();
+				tickOsc.type = 'triangle';
+				const tickFreq =
+					type === 'glass' ? 1220
+						: type === 'stone' || type === 'cobble' || type === 'obsidian' ? 230
+							: type === 'wood' || type === 'log' || type === 'redwood' || type === 'door' ? 360
+								: 520;
+				tickOsc.frequency.setValueAtTime(tickFreq, now);
+				const tickGain = ctx.createGain();
+				tickGain.gain.setValueAtTime(0.0001, now);
+				tickGain.gain.exponentialRampToValueAtTime(baseVolume * 0.65, now + 0.006);
+				tickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.06);
+				tickOsc.connect(tickGain);
+				tickGain.connect(ctx.destination);
+				tickOsc.start(now);
+				tickOsc.stop(now + 0.07);
 			};
 
 			const input = {
@@ -2769,46 +2852,52 @@
 				const pointerState = {
 					lookYaw: 0,
 					lookPitch: 0,
-					mouseDown: false,
 					lastMouseX: 0,
 					lastMouseY: 0
 				};
 
 				let miningDown = false;
 				let miningPointerId: number | null = null;
+				let pointerLocked = false;
+
+				const handlePointerLockChange = () => {
+					pointerLocked = document.pointerLockElement === renderer.domElement;
+					if (!pointerLocked) {
+						miningDown = false;
+						miningPointerId = null;
+					}
+				};
+				document.addEventListener('pointerlockchange', handlePointerLockChange);
 
 				const handleMouseDown = (event: PointerEvent) => {
-					if (event.pointerType !== 'mouse' || event.button !== 0) {
+					if (event.pointerType !== 'mouse') {
 						return;
 					}
 					ensureAudio();
-					pointerState.mouseDown = true;
-					miningDown = true;
-					pointerState.lastMouseX = event.clientX;
-					pointerState.lastMouseY = event.clientY;
-					if (event.target instanceof HTMLElement) {
-						event.target.setPointerCapture(event.pointerId);
-				}
-			};
+					if (!pointerLocked && typeof renderer.domElement.requestPointerLock === 'function') {
+						renderer.domElement.requestPointerLock();
+					}
+					if (event.button === 0) {
+						miningDown = true;
+					}
+					event.preventDefault();
+				};
 
-			const handleMouseMove = (event: PointerEvent) => {
-				if (event.pointerType !== 'mouse' || !pointerState.mouseDown) {
-					return;
-				}
-				const deltaX = event.clientX - pointerState.lastMouseX;
-				const deltaY = event.clientY - pointerState.lastMouseY;
-				pointerState.lastMouseX = event.clientX;
-				pointerState.lastMouseY = event.clientY;
-				pointerState.lookYaw += deltaX * 0.003;
-				pointerState.lookPitch += deltaY * 0.003;
-			};
+				const handleMouseMove = (event: PointerEvent) => {
+					if (event.pointerType !== 'mouse' || !pointerLocked) {
+						return;
+					}
+					pointerState.lookYaw += event.movementX * 0.0024;
+					pointerState.lookPitch -= event.movementY * 0.0024;
+				};
 
 				const handleMouseUp = (event: PointerEvent) => {
 					if (event.pointerType !== 'mouse') {
 						return;
 					}
-					pointerState.mouseDown = false;
-					miningDown = false;
+					if (event.button === 0) {
+						miningDown = false;
+					}
 				};
 
 			renderer.domElement.addEventListener('pointerdown', handleMouseDown);
@@ -2929,7 +3018,7 @@
 				lookState.lastX = event.clientX;
 				lookState.lastY = event.clientY;
 				pointerState.lookYaw += dx * 0.004;
-				pointerState.lookPitch += dy * 0.004;
+				pointerState.lookPitch -= dy * 0.004;
 				event.preventDefault();
 			};
 
@@ -3250,6 +3339,79 @@
 				}
 			};
 
+			const blockBreakTints: Partial<Record<BlockType, number>> = {
+				grass: 0x74c85a,
+				dirt: 0x80512c,
+				stone: 0x9ea2a3,
+				cobble: 0x8b8b8b,
+				wood: 0xc39a5d,
+				redwood: 0x81432a,
+				sandstone: 0xd8c48a,
+				obsidian: 0x2a1a3d,
+				marsSand: 0xc88c76,
+				marsRock: 0x8f5f53,
+				moonDust: 0xd9dfe9,
+				sand: 0xd9c58c,
+				gravel: 0x8a8e8f,
+				log: 0x9b7048,
+				leaves: 0x4f8f4b,
+				glass: 0x9ad6e8,
+				brick: 0x9b4a3a,
+				door: 0x6e4a2e,
+				coalOre: 0x4c4c4c,
+				ironOre: 0x9c7657,
+				mossyCobble: 0x6f7f6a,
+				clay: 0xa7b4b7,
+				snow: 0xf2f5ff,
+				ice: 0xb9e3ff,
+				netherrack: 0x6c2f2e
+			};
+
+			const breakParticleMats = new Map<BlockType, THREE.MeshStandardMaterial>();
+
+			const getBreakParticleMat = (type: BlockType) => {
+				const cached = breakParticleMats.get(type);
+				if (cached) {
+					return cached;
+				}
+				const tint = blockBreakTints[type] ?? 0xffc06b;
+				const mat = new THREE.MeshStandardMaterial({
+					color: tint,
+					roughness: 0.9,
+					metalness: 0
+				});
+				breakParticleMats.set(type, mat);
+				return mat;
+			};
+
+			const spawnBlockBreakParticles = (x: number, y: number, z: number, type: BlockType) => {
+				const centerY = y + 0.5;
+				const count =
+					type === 'leaves' || type === 'snow' ? 10
+						: type === 'glass' ? 14
+							: 18;
+				const mat = getBreakParticleMat(type);
+				for (let i = 0; i < count; i += 1) {
+					const mesh = new THREE.Mesh(particleGeo, mat);
+					mesh.position.set(
+						x + THREE.MathUtils.randFloatSpread(0.45),
+						centerY + THREE.MathUtils.randFloat(0.05, 0.55),
+						z + THREE.MathUtils.randFloatSpread(0.45)
+					);
+					const velocity = new THREE.Vector3(
+						THREE.MathUtils.randFloatSpread(1.8),
+						THREE.MathUtils.randFloat(1.2, 3.0),
+						THREE.MathUtils.randFloatSpread(1.8)
+					)
+						.normalize()
+						.multiplyScalar(THREE.MathUtils.randFloat(1.6, 3.4));
+					const scale = THREE.MathUtils.randFloat(0.8, 1.35);
+					mesh.scale.setScalar(scale);
+					particles.push({ mesh, velocity, life: THREE.MathUtils.randFloat(0.35, 0.7) });
+					scene.add(mesh);
+				}
+			};
+
 			const removeBlock = (block: FallingBlock) => {
 				if (block.removed) {
 					return;
@@ -3301,6 +3463,9 @@
 				const tempVec = new THREE.Vector3();
 				const tempVec2 = new THREE.Vector3();
 				const tempVec3 = new THREE.Vector3();
+				const viewEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+				const viewDir = new THREE.Vector3();
+				const viewTarget = new THREE.Vector3();
 				const raycaster = new THREE.Raycaster();
 				const mineRaycaster = new THREE.Raycaster();
 				const mineNdc = new THREE.Vector2(0, 0);
@@ -3497,7 +3662,10 @@
 					camera.position.copy(cameraRig.worldToLocal(adjustedWorld));
 					}
 
-					camera.lookAt(target);
+					viewEuler.set(cameraPitch, player.rotation.y, 0);
+					viewDir.copy(forwardBase).applyEuler(viewEuler);
+					viewTarget.copy(target).addScaledVector(viewDir, 18);
+					camera.lookAt(viewTarget);
 					camera.updateMatrixWorld();
 
 					aimedBlock = null;
@@ -3543,7 +3711,10 @@
 						const t = THREE.MathUtils.clamp(miningProgress / Math.max(0.01, miningRequired), 0, 1);
 						blockHighlightMat.opacity = 0.35 + t * 0.55;
 						if (miningProgress >= miningRequired) {
-							breakTargetBlock(aimedBlock);
+							if (breakTargetBlock(aimedBlock)) {
+								spawnBlockBreakParticles(aimedBlock.x, aimedBlock.y, aimedBlock.z, aimedBlock.type);
+								playBlockBreakSound(aimedBlock.type);
+							}
 							miningProgress = 0;
 							miningTargetKey = null;
 						}
@@ -3676,6 +3847,7 @@
 				window.removeEventListener('keyup', handleKeyUp);
 				window.removeEventListener('pointermove', handleMouseMove);
 				window.removeEventListener('pointerup', handleMouseUp);
+				document.removeEventListener('pointerlockchange', handlePointerLockChange);
 				renderer.domElement.removeEventListener('pointerdown', handleMouseDown);
 				joystickEl?.removeEventListener('pointerdown', handleJoystickDown);
 				joystickEl?.removeEventListener('pointermove', handleJoystickMove);
@@ -3737,6 +3909,10 @@
 				tntBottomMat.dispose();
 				particleMat.dispose();
 				portalParticleMat.dispose();
+				for (const mat of breakParticleMats.values()) {
+					mat.dispose();
+				}
+				breakParticleMats.clear();
 				grassTopTex.dispose();
 				grassSideTex.dispose();
 				dirtTex.dispose();
@@ -3808,6 +3984,7 @@
 				for (const audio of bgmCache.values()) {
 					audio.pause();
 				}
+				sfxCtx?.close().catch(() => {});
 
 				renderer.dispose();
 			};
@@ -3841,7 +4018,7 @@
 				<button type="button" on:click={() => jumpWorld('mars')}>Mars</button>
 				<button type="button" on:click={() => jumpWorld('moon')}>Moon</button>
 			</div>
-			<p>Walk into a portal to swap worlds. W / A / S / D or Arrow keys + mouse drag. Space to jump. Touch: left stick move, drag anywhere to look, tap Jump.</p>
+			<p>Walk into a portal to swap worlds. W / A / S / D or Arrow keys. Click the world to capture the mouse (Esc to release), then move to look. Space to jump. Hold left click (or touch and hold) to mine the highlighted block and collect it into your hotbar.</p>
 		</div>
 		<div class="scene" bind:this={container}></div>
 		<div class="crosshair" aria-hidden="true"></div>
