@@ -39,8 +39,86 @@
 		let hotbar: Array<BlockType | null> = Array.from({ length: HOTBAR_SLOTS }, () => null);
 		let selectedHotbar = 0;
 
+		type Rarity = 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
+
+		const RARITY_LABEL: Record<Rarity, string> = {
+			common: 'Common',
+			uncommon: 'Uncommon',
+			rare: 'Rare',
+			epic: 'Epic',
+			legendary: 'Legendary'
+		};
+
+		const RARITY_COLOR: Record<Rarity, string> = {
+			common: '#c9d2d6',
+			uncommon: '#54e3a3',
+			rare: '#6ab6ff',
+			epic: '#ff6bd6',
+			legendary: '#ffd26a'
+		};
+
+		const RARITY_MULTIPLIER: Record<Rarity, number> = {
+			common: 1,
+			uncommon: 1.7,
+			rare: 3.2,
+			epic: 6.2,
+			legendary: 12
+		};
+
+		const MACHINERY_CATALOG = [
+			{ id: 'duneRover', name: 'Dune Rover', category: 'transport', rarity: 'uncommon', baseCost: 60 },
+			{ id: 'gravBike', name: 'Grav Bike', category: 'transport', rarity: 'rare', baseCost: 80 },
+			{ id: 'orbitalSkiff', name: 'Orbital Skiff', category: 'ship', rarity: 'epic', baseCost: 120 },
+			{ id: 'deepSpaceShuttle', name: 'Deep Space Shuttle', category: 'ship', rarity: 'legendary', baseCost: 160 },
+			{ id: 'spaceSuitMk1', name: 'Spacesuit Mk I', category: 'equipment', rarity: 'uncommon', baseCost: 55 },
+			{ id: 'spaceSuitMk4', name: 'Spacesuit Mk IV', category: 'equipment', rarity: 'epic', baseCost: 95 }
+		] as const satisfies ReadonlyArray<{
+			id: string;
+			name: string;
+			category: 'ship' | 'transport' | 'equipment';
+			rarity: Rarity;
+			baseCost: number;
+		}>;
+
+		type MachineryId = (typeof MACHINERY_CATALOG)[number]['id'];
+		const MACHINERY_BY_ID = new Map(MACHINERY_CATALOG.map((entry) => [entry.id, entry] as const));
+
+		const CARD_CATALOG = [
+			{ id: 'ticketGreen', name: 'Ticket: Verdant Line', rarity: 'common' },
+			{ id: 'ticketRust', name: 'Ticket: Rust Dunes', rarity: 'uncommon' },
+			{ id: 'ticketLunar', name: 'Ticket: Lunar Pass', rarity: 'rare' },
+			{ id: 'ticketVoid', name: 'Ticket: Void Sigil', rarity: 'epic' }
+		] as const satisfies ReadonlyArray<{ id: string; name: string; rarity: Rarity }>;
+
+		type CardId = (typeof CARD_CATALOG)[number]['id'];
+		const CARD_BY_ID = new Map(CARD_CATALOG.map((entry) => [entry.id, entry] as const));
+
+		const GAME_STATE_STORAGE_KEY = 'steal:game-state-v1';
+
+		let crypto = 120;
+		let ownedMachinery: Partial<Record<MachineryId, number>> = {};
+		let collectedCards: Partial<Record<CardId, number>> = {};
+
+		let hudToast: { text: string; tone: 'info' | 'warn' | 'error' } | null = null;
+		let interactionHint: string | null = null;
+		let interactionActionLabel: string | null = null;
+		let interactRequested = false;
+
+		const getOwnedMachineryCount = (id: MachineryId) => ownedMachinery[id] ?? 0;
+		const getCollectedCardCount = (id: CardId) => collectedCards[id] ?? 0;
+		const getMachineryCost = (id: MachineryId) => {
+			const def = MACHINERY_BY_ID.get(id);
+			if (!def) return 0;
+			return Math.max(0, Math.round(def.baseCost * RARITY_MULTIPLIER[def.rarity]));
+		};
+		const formatCrypto = (amount: number) => Math.max(0, Math.floor(amount)).toLocaleString();
+
 		const getInventoryCount = (type: BlockType) => inventory[type] ?? 0;
 		const getBlockIcon = (type: BlockType) => blockIcons[type] ?? '';
+
+		const requestInteract = () => {
+			interactRequested = true;
+		};
 
 		const addToInventory = (type: BlockType, amount = 1) => {
 			const nextCount = (inventory[type] ?? 0) + amount;
@@ -134,12 +212,89 @@
 			saveDebugCameraSettings();
 		};
 
+		let toastTimeout: ReturnType<typeof setTimeout> | null = null;
+
+		const showToast = (text: string, tone: 'info' | 'warn' | 'error' = 'info') => {
+			hudToast = { text, tone };
+			if (toastTimeout) {
+				clearTimeout(toastTimeout);
+				toastTimeout = null;
+			}
+			if (typeof window !== 'undefined') {
+				toastTimeout = setTimeout(() => {
+					hudToast = null;
+					toastTimeout = null;
+				}, 2800);
+			}
+		};
+
+		const loadGameState = () => {
+			if (typeof localStorage === 'undefined') {
+				return;
+			}
+			try {
+				const raw = localStorage.getItem(GAME_STATE_STORAGE_KEY);
+				if (!raw) {
+					return;
+				}
+				const parsed = JSON.parse(raw) as Partial<Record<string, unknown>> | null;
+				if (!parsed || typeof parsed !== 'object') {
+					return;
+				}
+				if (typeof parsed.crypto === 'number' && Number.isFinite(parsed.crypto)) {
+					crypto = Math.max(0, Math.floor(parsed.crypto));
+				}
+				const machineryIds = new Set<string>(MACHINERY_CATALOG.map((entry) => entry.id));
+				if (parsed.ownedMachinery && typeof parsed.ownedMachinery === 'object') {
+					const next: Partial<Record<MachineryId, number>> = {};
+					for (const [key, value] of Object.entries(parsed.ownedMachinery as Record<string, unknown>)) {
+						if (!machineryIds.has(key)) continue;
+						if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) continue;
+						next[key as MachineryId] = Math.floor(value);
+					}
+					ownedMachinery = next;
+				}
+				const cardIds = new Set<string>(CARD_CATALOG.map((entry) => entry.id));
+				if (parsed.collectedCards && typeof parsed.collectedCards === 'object') {
+					const next: Partial<Record<CardId, number>> = {};
+					for (const [key, value] of Object.entries(parsed.collectedCards as Record<string, unknown>)) {
+						if (!cardIds.has(key)) continue;
+						if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) continue;
+						next[key as CardId] = Math.floor(value);
+					}
+					collectedCards = next;
+				}
+			} catch {
+				// ignore
+			}
+		};
+
+		const saveGameState = () => {
+			if (typeof localStorage === 'undefined') {
+				return;
+			}
+			try {
+				localStorage.setItem(
+					GAME_STATE_STORAGE_KEY,
+					JSON.stringify({
+						v: 1,
+						crypto,
+						ownedMachinery,
+						collectedCards
+					})
+				);
+			} catch {
+				// ignore
+			}
+		};
+
 		onMount(() => {
 			const urlParams = new URLSearchParams(window.location.search);
 			if (urlParams.has('debugCamera')) {
 				loadDebugCameraSettings();
 				debugCameraEnabled = true;
 			}
+			loadGameState();
 
 			let dispose = () => {};
 			let cancelled = false;
@@ -2041,6 +2196,171 @@
 					}
 				};
 
+				type BasePlan = {
+					x: number;
+					z: number;
+					width: number;
+					depth: number;
+					wallHeight: number;
+					roofHeight: number;
+					facing: 0 | 1 | 2 | 3;
+					baseY: number;
+					doorX: number;
+					doorZ: number;
+				};
+
+				const computeBaseY = (bx: number, bz: number, w: number, d: number) => {
+					let minH = Number.POSITIVE_INFINITY;
+					let maxH = Number.NEGATIVE_INFINITY;
+					for (let dx = 0; dx < w; dx += 1) {
+						for (let dz = 0; dz < d; dz += 1) {
+							const h = getHeightAt(bx + dx, bz + dz);
+							minH = Math.min(minH, h);
+							maxH = Math.max(maxH, h);
+						}
+					}
+					// This base is meant to be big and dramatic, so allow slightly rougher ground than houses.
+					if (maxH - minH > 3) {
+						return -1;
+					}
+					return maxH;
+				};
+
+				const emitBase = (plan: BasePlan) => {
+					const baseX = plan.x;
+					const baseZ = plan.z;
+					const y0 = plan.baseY;
+
+					const floorMat: BlockType = 'obsidian';
+					const wallMat: BlockType = 'brick';
+					const frameMat: BlockType = 'obsidian';
+					const windowMat: BlockType = 'glass';
+					const accentMat: BlockType = 'ice';
+
+					for (let dx = 0; dx < plan.width; dx += 1) {
+						for (let dz = 0; dz < plan.depth; dz += 1) {
+							const x = baseX + dx;
+							const z = baseZ + dz;
+							if (x < chunkMinX || x >= chunkMinX + chunkSize || z < chunkMinZ || z >= chunkMinZ + chunkSize) {
+								continue;
+							}
+							const idx = (x - chunkMinX) * chunkSize + (z - chunkMinZ);
+							noPlants[idx] = 1;
+							flatTarget[idx] = Math.max(flatTarget[idx], y0);
+							const surface = getHeightAt(x, z);
+							if (surface < y0) {
+								foundationStart[idx] = foundationStart[idx] === -1 ? surface : Math.min(foundationStart[idx], surface);
+								foundationMaterial[idx] = frameMat;
+							}
+							topOverride[idx] = floorMat;
+						}
+					}
+
+					const wallTop = y0 + plan.wallHeight;
+					const isWall = (dx: number, dz: number) =>
+						dx === 0 || dz === 0 || dx === plan.width - 1 || dz === plan.depth - 1;
+
+					const doorSpan = 4; // larger than villager doors
+					const doorHalf = Math.floor(doorSpan / 2);
+					const doorXs = plan.facing === 0 || plan.facing === 2
+						? [plan.doorX - doorHalf, plan.doorX - doorHalf + 1, plan.doorX - doorHalf + 2, plan.doorX - doorHalf + 3]
+						: [plan.doorX];
+					const doorZs = plan.facing === 1 || plan.facing === 3
+						? [plan.doorZ - doorHalf, plan.doorZ - doorHalf + 1, plan.doorZ - doorHalf + 2, plan.doorZ - doorHalf + 3]
+						: [plan.doorZ];
+
+					const isDoorCell = (x: number, z: number) => {
+						if (plan.facing === 0 || plan.facing === 2) {
+							return z === plan.doorZ && doorXs.includes(x);
+						}
+						return x === plan.doorX && doorZs.includes(z);
+					};
+
+					for (let dy = 0; dy < plan.wallHeight; dy += 1) {
+						const y = y0 + dy;
+						for (let dx = 0; dx < plan.width; dx += 1) {
+							for (let dz = 0; dz < plan.depth; dz += 1) {
+								if (!isWall(dx, dz)) continue;
+								const x = baseX + dx;
+								const z = baseZ + dz;
+
+								const isCorner = (dx === 0 || dx === plan.width - 1) && (dz === 0 || dz === plan.depth - 1);
+								if (isDoorCell(x, z) && dy < 3) {
+									continue;
+								}
+
+								const windowRow = dy === 2 || dy === 3;
+								const canWindow = windowRow && !isCorner && !isDoorCell(x, z);
+								const supportEvery = 3;
+								const onSupport = (dx % supportEvery === 0) || (dz % supportEvery === 0);
+								if (canWindow && !onSupport) {
+									emitSolidBlock(x, y, z, windowMat, true);
+									continue;
+								}
+								emitSolidBlock(x, y, z, isCorner ? frameMat : wallMat, true);
+							}
+						}
+					}
+
+					// Massive entrance.
+					for (const x of doorXs) {
+						for (const z of doorZs) {
+							for (let dy = 0; dy < 3; dy += 1) {
+								emitSolidBlock(x, y0 + dy, z, 'door', false);
+							}
+							emitSolidBlock(x, y0 + 3, z, frameMat, true);
+						}
+					}
+
+					// Roof: obsidian rim + glass skylight + icy crown.
+					for (let i = 0; i < plan.roofHeight; i += 1) {
+						const inset = i;
+						const y = wallTop + i;
+						for (let dx = inset; dx < plan.width - inset; dx += 1) {
+							for (let dz = inset; dz < plan.depth - inset; dz += 1) {
+								const edge =
+									dx === inset ||
+									dz === inset ||
+									dx === plan.width - inset - 1 ||
+									dz === plan.depth - inset - 1;
+								if (!edge) continue;
+								const x = baseX + dx;
+								const z = baseZ + dz;
+								emitSolidBlock(x, y, z, frameMat, true);
+							}
+						}
+					}
+
+					const skylightInset = Math.min(3, Math.floor(Math.min(plan.width, plan.depth) / 5));
+					const skylightY = wallTop + plan.roofHeight - 1;
+					for (let dx = skylightInset; dx < plan.width - skylightInset; dx += 1) {
+						for (let dz = skylightInset; dz < plan.depth - skylightInset; dz += 1) {
+							const x = baseX + dx;
+							const z = baseZ + dz;
+							const rim =
+								dx === skylightInset ||
+								dz === skylightInset ||
+								dx === plan.width - skylightInset - 1 ||
+								dz === plan.depth - skylightInset - 1;
+							emitSolidBlock(x, skylightY, z, rim ? accentMat : windowMat, true);
+						}
+					}
+
+					// Beacon spire.
+					const cx = baseX + Math.floor(plan.width / 2);
+					const cz = baseZ + Math.floor(plan.depth / 2);
+					for (let dy = 0; dy < 7; dy += 1) {
+						const y = skylightY + 1 + dy;
+						emitSolidBlock(cx, y, cz, dy < 5 ? windowMat : accentMat, true);
+						if (dy % 2 === 0) {
+							emitSolidBlock(cx + 1, y, cz, frameMat, true);
+							emitSolidBlock(cx - 1, y, cz, frameMat, true);
+							emitSolidBlock(cx, y, cz + 1, frameMat, true);
+							emitSolidBlock(cx, y, cz - 1, frameMat, true);
+						}
+					}
+				};
+
 				const emitVillageWell = (
 					centerX: number,
 					centerZ: number,
@@ -2162,6 +2482,65 @@
 
 							emitVillageWell(centerX, centerZ, centerHeight, centerBiome);
 
+							let basePlan: BasePlan | null = null;
+							if (isSpawnVillage) {
+								const baseWidth = 18;
+								const baseDepth = 20;
+								const wallHeight = 7;
+								const roofHeight = 4;
+								const candidates: Array<{ ox: number; oz: number }> = [
+									{ ox: 28, oz: 18 },
+									{ ox: -30, oz: 16 },
+									{ ox: 22, oz: -30 },
+									{ ox: -28, oz: -26 }
+								];
+								for (const candidate of candidates) {
+									const cx = centerX + candidate.ox;
+									const cz = centerZ + candidate.oz;
+									const bx = cx - Math.floor(baseWidth / 2);
+									const bz = cz - Math.floor(baseDepth / 2);
+									const by = computeBaseY(bx, bz, baseWidth, baseDepth);
+									if (by < 0) continue;
+									if (waterLevel > 0 && by < waterLevel) continue;
+
+									const toCenterX = centerX - cx;
+									const toCenterZ = centerZ - cz;
+									const facing: 0 | 1 | 2 | 3 =
+										Math.abs(toCenterX) > Math.abs(toCenterZ)
+											? (toCenterX > 0 ? 3 : 1)
+											: (toCenterZ > 0 ? 0 : 2);
+									const doorX =
+										facing === 0 ? bx + Math.floor(baseWidth / 2)
+											: facing === 2 ? bx + Math.floor(baseWidth / 2)
+												: facing === 1 ? bx + baseWidth - 1
+													: bx;
+									const doorZ =
+										facing === 1 ? bz + Math.floor(baseDepth / 2)
+											: facing === 3 ? bz + Math.floor(baseDepth / 2)
+												: facing === 0 ? bz
+													: bz + baseDepth - 1;
+									basePlan = {
+										x: bx,
+										z: bz,
+										width: baseWidth,
+										depth: baseDepth,
+										wallHeight,
+										roofHeight,
+										facing,
+										baseY: by,
+										doorX,
+										doorZ
+									};
+									break;
+								}
+							}
+							if (basePlan) {
+								emitBase(basePlan);
+								const pathStartX = basePlan.doorX + (basePlan.facing === 1 ? 1 : basePlan.facing === 3 ? -1 : 0);
+								const pathStartZ = basePlan.doorZ + (basePlan.facing === 2 ? 1 : basePlan.facing === 0 ? -1 : 0);
+								drawPath(pathStartX, pathStartZ, centerX, centerZ, roadMat);
+							}
+
 							const computeHouseBaseY = (hx: number, hz: number, w: number, d: number) => {
 								let minH = Number.POSITIVE_INFINITY;
 								let maxH = Number.NEGATIVE_INFINITY;
@@ -2194,6 +2573,19 @@
 
 								const w = 6 + Math.floor(hash2D(hx + seedSalt, hz - seedSalt, currentWorld.seed + 110) * 4);
 								const d = 6 + Math.floor(hash2D(hx - seedSalt, hz + seedSalt, currentWorld.seed + 111) * 4);
+								if (basePlan) {
+									const margin = 2;
+									const baseMinX = basePlan.x - margin;
+									const baseMaxX = basePlan.x + basePlan.width - 1 + margin;
+									const baseMinZ = basePlan.z - margin;
+									const baseMaxZ = basePlan.z + basePlan.depth - 1 + margin;
+									const houseMinX = hx;
+									const houseMaxX = hx + w - 1;
+									const houseMinZ = hz;
+									const houseMaxZ = hz + d - 1;
+									const overlaps = houseMinX <= baseMaxX && houseMaxX >= baseMinX && houseMinZ <= baseMaxZ && houseMaxZ >= baseMinZ;
+									if (overlaps) return;
+								}
 								const wallHeight =
 									3 + Math.floor(hash2D(hx + seedSalt * 2, hz - seedSalt * 2, currentWorld.seed + 112) * 2);
 								const roofHeight =
@@ -2574,6 +2966,30 @@
 					netherrack: 0.7
 				};
 
+				const CRYPTO_REWARD_BY_BLOCK: Partial<Record<BlockType, number>> = {
+					coalOre: 4,
+					ironOre: 6,
+					obsidian: 9,
+					netherrack: 5
+				};
+
+				const addCrypto = (amount: number) => {
+					const next = Math.max(0, Math.floor(crypto + amount));
+					if (next === crypto) return;
+					crypto = next;
+					saveGameState();
+				};
+
+				const spendCrypto = (amount: number) => {
+					const cost = Math.max(0, Math.floor(amount));
+					if (crypto < cost) {
+						return false;
+					}
+					crypto = crypto - cost;
+					saveGameState();
+					return true;
+				};
+
 					const breakTargetBlock = (target: BlockTarget) => {
 						if (!isMineableType(target.type)) {
 							return false;
@@ -2592,6 +3008,10 @@
 							edits.removed.add(key);
 						}
 						addToInventory(target.type, 1);
+						const reward = CRYPTO_REWARD_BY_BLOCK[target.type] ?? 0;
+						if (reward > 0) {
+							addCrypto(reward);
+						}
 						rebuildChunkAt(target.x, target.z);
 						return true;
 					};
@@ -3339,6 +3759,530 @@
 					}
 				};
 
+				type MachineryDef = (typeof MACHINERY_CATALOG)[number];
+
+				type MachineryInstance = {
+					def: MachineryDef;
+					group: THREE.Group;
+					label: THREE.Sprite;
+					home: THREE.Vector2;
+					target: THREE.Vector2;
+					speed: number;
+					phase: number;
+					targetTimer: number;
+					life: number;
+					hover: number;
+				};
+
+				const machineries: MachineryInstance[] = [];
+				const machineryLabelTextures = new Map<MachineryId, THREE.Texture>();
+				const machineryLabelMats = new Map<MachineryId, THREE.SpriteMaterial>();
+
+				const cardTextures = new Map<CardId, THREE.Texture>();
+				const cardMats = new Map<CardId, THREE.SpriteMaterial>();
+
+				const rarityAccentMats = new Map<Rarity, THREE.MeshStandardMaterial>();
+				for (const rarity of Object.keys(RARITY_LABEL) as Rarity[]) {
+					const color = new THREE.Color(RARITY_COLOR[rarity]);
+					const mat = new THREE.MeshStandardMaterial({
+						color,
+						emissive: color,
+						emissiveIntensity: 0.85,
+						roughness: 0.3,
+						metalness: 0.35
+					});
+					rarityAccentMats.set(rarity, mat);
+				}
+
+				const machineryHullMat = new THREE.MeshStandardMaterial({
+					color: 0x1a232b,
+					roughness: 0.35,
+					metalness: 0.35
+				});
+				const machineryDetailMat = new THREE.MeshStandardMaterial({
+					color: 0x394851,
+					roughness: 0.6,
+					metalness: 0.2
+				});
+				const machineryGlassMat = new THREE.MeshStandardMaterial({
+					color: 0xa8e7ff,
+					roughness: 0.1,
+					metalness: 0.15,
+					transparent: true,
+					opacity: 0.72,
+					depthWrite: false
+				});
+
+				const getRarityAccentMat = (rarity: Rarity) => rarityAccentMats.get(rarity) ?? machineryDetailMat;
+
+				const createMachineryLabelTexture = (def: MachineryDef) => {
+					const canvas = document.createElement('canvas');
+					canvas.width = 420;
+					canvas.height = 96;
+					const ctx = canvas.getContext('2d');
+					if (ctx) {
+						ctx.imageSmoothingEnabled = false;
+						ctx.clearRect(0, 0, canvas.width, canvas.height);
+						ctx.fillStyle = 'rgba(8, 12, 16, 0.75)';
+						ctx.fillRect(0, 0, canvas.width, canvas.height);
+						ctx.strokeStyle = RARITY_COLOR[def.rarity];
+						ctx.lineWidth = 6;
+						ctx.strokeRect(8, 8, canvas.width - 16, canvas.height - 16);
+						ctx.fillStyle = '#fef3dd';
+						ctx.font = 'bold 30px "Space Grotesk", sans-serif';
+						ctx.textAlign = 'center';
+						ctx.textBaseline = 'middle';
+						const cost = getMachineryCost(def.id);
+						ctx.fillText(`${def.name}  •  ${cost} SC`, canvas.width / 2, 44);
+						ctx.fillStyle = 'rgba(183, 241, 255, 0.85)';
+						ctx.font = 'bold 16px "Space Grotesk", sans-serif';
+						ctx.fillText(`${RARITY_LABEL[def.rarity]} ${def.category.toUpperCase()}`, canvas.width / 2, 74);
+					}
+					const texture = new THREE.CanvasTexture(canvas);
+					texture.colorSpace = THREE.SRGBColorSpace;
+					texture.magFilter = THREE.NearestFilter;
+					texture.minFilter = THREE.NearestMipMapNearestFilter;
+					return texture;
+				};
+
+				const getMachineryLabelMat = (def: MachineryDef) => {
+					const cachedMat = machineryLabelMats.get(def.id);
+					if (cachedMat) {
+						return cachedMat;
+					}
+					const texture = createMachineryLabelTexture(def);
+					machineryLabelTextures.set(def.id, texture);
+					const mat = new THREE.SpriteMaterial({
+						map: texture,
+						transparent: true,
+						depthTest: false
+					});
+					machineryLabelMats.set(def.id, mat);
+					return mat;
+				};
+
+				const createTicketTexture = (card: (typeof CARD_CATALOG)[number]) => {
+					const canvas = document.createElement('canvas');
+					canvas.width = 384;
+					canvas.height = 256;
+					const ctx = canvas.getContext('2d');
+					if (ctx) {
+						ctx.imageSmoothingEnabled = false;
+						ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+						const rarityColor = RARITY_COLOR[card.rarity];
+						ctx.fillStyle = 'rgba(10, 16, 20, 0.85)';
+						ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+						ctx.fillStyle = 'rgba(249, 209, 140, 0.12)';
+						ctx.fillRect(20, 24, canvas.width - 40, canvas.height - 48);
+
+						ctx.strokeStyle = rarityColor;
+						ctx.lineWidth = 8;
+						ctx.strokeRect(20, 24, canvas.width - 40, canvas.height - 48);
+
+						// Perforation line.
+						ctx.strokeStyle = 'rgba(232, 243, 246, 0.18)';
+						ctx.lineWidth = 3;
+						ctx.setLineDash([8, 8]);
+						ctx.beginPath();
+						ctx.moveTo(38, canvas.height * 0.62);
+						ctx.lineTo(canvas.width - 38, canvas.height * 0.62);
+						ctx.stroke();
+						ctx.setLineDash([]);
+
+						ctx.fillStyle = '#fef3dd';
+						ctx.font = 'bold 30px "Space Grotesk", sans-serif';
+						ctx.textAlign = 'center';
+						ctx.textBaseline = 'middle';
+						ctx.fillText('TICKET', canvas.width / 2, 72);
+
+						ctx.fillStyle = 'rgba(183, 241, 255, 0.9)';
+						ctx.font = 'bold 20px "Space Grotesk", sans-serif';
+						ctx.fillText(RARITY_LABEL[card.rarity].toUpperCase(), canvas.width / 2, 106);
+
+						ctx.fillStyle = '#fef3dd';
+						ctx.font = 'bold 22px "Space Grotesk", sans-serif';
+						ctx.fillText(card.name.replace('Ticket: ', ''), canvas.width / 2, 158);
+
+						ctx.fillStyle = 'rgba(232, 243, 246, 0.65)';
+						ctx.font = 'bold 16px "Space Grotesk", sans-serif';
+						ctx.fillText('COLLECTABLE', canvas.width / 2, 206);
+					}
+					const texture = new THREE.CanvasTexture(canvas);
+					texture.colorSpace = THREE.SRGBColorSpace;
+					texture.magFilter = THREE.NearestFilter;
+					texture.minFilter = THREE.NearestMipMapNearestFilter;
+					return texture;
+				};
+
+				const getCardMat = (card: (typeof CARD_CATALOG)[number]) => {
+					const cached = cardMats.get(card.id);
+					if (cached) {
+						return cached;
+					}
+					const texture = createTicketTexture(card);
+					cardTextures.set(card.id, texture);
+					const mat = new THREE.SpriteMaterial({
+						map: texture,
+						transparent: true,
+						depthTest: true
+					});
+					cardMats.set(card.id, mat);
+					return mat;
+				};
+
+				const weightedPick = <T,>(items: readonly T[], weight: (item: T) => number) => {
+					let total = 0;
+					for (const item of items) {
+						total += Math.max(0, weight(item));
+					}
+					if (total <= 0) {
+						return items[0] ?? null;
+					}
+					let roll = Math.random() * total;
+					for (const item of items) {
+						roll -= Math.max(0, weight(item));
+						if (roll <= 0) {
+							return item;
+						}
+					}
+					return items[items.length - 1] ?? null;
+				};
+
+				const raritySpawnWeight = (rarity: Rarity) => {
+					switch (rarity) {
+						case 'common':
+							return 1;
+						case 'uncommon':
+							return 0.55;
+						case 'rare':
+							return 0.22;
+						case 'epic':
+							return 0.09;
+						case 'legendary':
+							return 0.03;
+						default:
+							return 0.15;
+					}
+				};
+
+				const clearMachinery = () => {
+					for (const machine of machineries) {
+						scene.remove(machine.group);
+					}
+					machineries.length = 0;
+				};
+
+				const getMachinerySpeed = (def: MachineryDef) => {
+					if (def.category === 'ship') return 3.1;
+					if (def.category === 'transport') return 2.35;
+					return 1.6;
+				};
+
+				const getMachineryHover = (def: MachineryDef) => {
+					if (def.category === 'ship') return 2.4;
+					if (def.category === 'transport') return 1.05;
+					return 0.65;
+				};
+
+				const createMachineryModel = (def: MachineryDef) => {
+					const group = new THREE.Group();
+					const accent = getRarityAccentMat(def.rarity);
+
+					if (def.id === 'orbitalSkiff' || def.id === 'deepSpaceShuttle') {
+						const hull = new THREE.Mesh(blockGeo, machineryHullMat);
+						hull.scale.set(2.6, 0.6, 1.6);
+						hull.position.set(0, 0.6, 0);
+						group.add(hull);
+
+						const cockpit = new THREE.Mesh(blockGeo, machineryGlassMat);
+						cockpit.scale.set(1.3, 0.5, 0.9);
+						cockpit.position.set(0, 0.92, 0.3);
+						group.add(cockpit);
+
+						const fin = new THREE.Mesh(blockGeo, accent);
+						fin.scale.set(0.22, 1.1, 0.22);
+						fin.position.set(0, 1.25, -0.55);
+						group.add(fin);
+
+						for (const s of [-1, 1] as const) {
+							const engine = new THREE.Mesh(blockGeo, machineryDetailMat);
+							engine.scale.set(0.55, 0.35, 0.55);
+							engine.position.set(s * 1.05, 0.6, -0.55);
+							group.add(engine);
+
+							const glow = new THREE.Mesh(blockGeo, accent);
+							glow.scale.set(0.18, 0.18, 0.18);
+							glow.position.set(0, 0, -0.42);
+							engine.add(glow);
+						}
+					} else if (def.id === 'duneRover') {
+						const body = new THREE.Mesh(blockGeo, machineryHullMat);
+						body.scale.set(1.8, 0.5, 1.2);
+						body.position.set(0, 0.65, 0);
+						group.add(body);
+
+						const cab = new THREE.Mesh(blockGeo, machineryGlassMat);
+						cab.scale.set(0.8, 0.45, 0.7);
+						cab.position.set(0, 0.95, 0.25);
+						group.add(cab);
+
+						for (const wx of [-0.75, 0.75] as const) {
+							for (const wz of [-0.45, 0.45] as const) {
+								const wheel = new THREE.Mesh(blockGeo, machineryDetailMat);
+								wheel.scale.set(0.35, 0.35, 0.35);
+								wheel.position.set(wx, 0.25, wz);
+								group.add(wheel);
+								const hub = new THREE.Mesh(blockGeo, accent);
+								hub.scale.set(0.12, 0.12, 0.12);
+								wheel.add(hub);
+							}
+						}
+					} else if (def.id === 'gravBike') {
+						const spine = new THREE.Mesh(blockGeo, machineryHullMat);
+						spine.scale.set(2.2, 0.32, 0.6);
+						spine.position.set(0, 0.55, 0);
+						group.add(spine);
+
+						const seat = new THREE.Mesh(blockGeo, machineryDetailMat);
+						seat.scale.set(0.7, 0.35, 0.55);
+						seat.position.set(0.25, 0.72, 0);
+						group.add(seat);
+
+						const nose = new THREE.Mesh(blockGeo, accent);
+						nose.scale.set(0.55, 0.18, 0.4);
+						nose.position.set(1.15, 0.58, 0);
+						group.add(nose);
+
+						for (const s of [-1, 1] as const) {
+							const stabilizer = new THREE.Mesh(blockGeo, machineryDetailMat);
+							stabilizer.scale.set(0.12, 0.5, 0.7);
+							stabilizer.position.set(-0.75, 0.65, s * 0.55);
+							group.add(stabilizer);
+						}
+					} else {
+						// Spacesuits
+						const torso = new THREE.Mesh(blockGeo, machineryDetailMat);
+						torso.scale.set(0.75, 0.95, 0.45);
+						torso.position.set(0, 0.82, 0);
+						group.add(torso);
+
+						const visor = new THREE.Mesh(blockGeo, machineryGlassMat);
+						visor.scale.set(0.65, 0.6, 0.65);
+						visor.position.set(0, 1.35, 0.1);
+						group.add(visor);
+
+						const backpack = new THREE.Mesh(blockGeo, machineryHullMat);
+						backpack.scale.set(0.55, 0.75, 0.25);
+						backpack.position.set(0, 0.92, -0.35);
+						group.add(backpack);
+
+						const badge = new THREE.Mesh(blockGeo, accent);
+						badge.scale.set(0.15, 0.15, 0.05);
+						badge.position.set(-0.22, 0.95, 0.26);
+						group.add(badge);
+					}
+
+					return group;
+				};
+
+				const pickMachineryTarget = (machine: MachineryInstance, seed: number) => {
+					const fluidSurface = Math.max(currentWorld.fluids.waterLevel, currentWorld.fluids.lavaLevel);
+					for (let attempt = 0; attempt < 12; attempt += 1) {
+						const a = hash2D(seed + attempt * 37, seed - attempt * 19, currentWorld.seed + 12100) * Math.PI * 2;
+						const r = 6 + hash2D(seed + attempt * 11, seed + attempt * 23, currentWorld.seed + 12101) * 26;
+						const tx = Math.round(machine.home.x + Math.cos(a) * r);
+						const tz = Math.round(machine.home.y + Math.sin(a) * r);
+						const info = getTerrainInfo(tx, tz, currentWorld);
+						if (info.lavaStrength > 0.22) continue;
+						if (currentWorld.fluids.waterLevel > 0 && info.height < currentWorld.fluids.waterLevel) continue;
+
+						let minH = Number.POSITIVE_INFINITY;
+						let maxH = Number.NEGATIVE_INFINITY;
+						for (let ox = -1; ox <= 1; ox += 1) {
+							for (let oz = -1; oz <= 1; oz += 1) {
+								const h = computeHeight(tx + ox, tz + oz, currentWorld);
+								minH = Math.min(minH, h);
+								maxH = Math.max(maxH, h);
+							}
+						}
+						if (maxH - minH > 3) continue;
+						machine.target.set(tx, tz);
+						machine.targetTimer = 2 + hash2D(tx, tz, currentWorld.seed + 12120) * 4.8;
+						machine.group.position.y = Math.max(machine.group.position.y, Math.max(info.height, fluidSurface) + machine.hover);
+						return;
+					}
+					machine.target.copy(machine.home);
+					machine.targetTimer = 2;
+				};
+
+				const findSpawnSpotNearPlayer = (minR: number, maxR: number) => {
+					const fluidSurface = Math.max(currentWorld.fluids.waterLevel, currentWorld.fluids.lavaLevel);
+					const px = player.position.x;
+					const pz = player.position.z;
+					for (let attempt = 0; attempt < 32; attempt += 1) {
+						const a = Math.random() * Math.PI * 2;
+						const r = THREE.MathUtils.lerp(minR, maxR, Math.random());
+						const x = Math.round(px + Math.cos(a) * r);
+						const z = Math.round(pz + Math.sin(a) * r);
+						const info = getTerrainInfo(x, z, currentWorld);
+						if (info.lavaStrength > 0.22) continue;
+						if (currentWorld.fluids.waterLevel > 0 && info.height < currentWorld.fluids.waterLevel) continue;
+						if (info.biome.id === 'ocean') continue;
+
+						let minH = Number.POSITIVE_INFINITY;
+						let maxH = Number.NEGATIVE_INFINITY;
+						for (let ox = -1; ox <= 1; ox += 1) {
+							for (let oz = -1; oz <= 1; oz += 1) {
+								const h = computeHeight(x + ox, z + oz, currentWorld);
+								minH = Math.min(minH, h);
+								maxH = Math.max(maxH, h);
+							}
+						}
+						if (maxH - minH > 3) continue;
+						const surface = Math.max(info.height, fluidSurface);
+						return { x, z, y: surface + 0.25 };
+					}
+					return null;
+				};
+
+				const spawnMachinery = () => {
+					const def = weightedPick(MACHINERY_CATALOG, (entry) => raritySpawnWeight(entry.rarity));
+					if (!def) return false;
+					const spot = findSpawnSpotNearPlayer(16, 44);
+					if (!spot) return false;
+
+					const group = createMachineryModel(def);
+					const hover = getMachineryHover(def);
+					group.position.set(spot.x, spot.y + hover, spot.z);
+
+					const label = new THREE.Sprite(getMachineryLabelMat(def));
+					label.position.set(0, 2.25 + (def.category === 'ship' ? 1.1 : 0), 0);
+					label.scale.set(5.3, 1.2, 1);
+					group.add(label);
+
+					const machine: MachineryInstance = {
+						def,
+						group,
+						label,
+						home: new THREE.Vector2(spot.x, spot.z),
+						target: new THREE.Vector2(spot.x, spot.z),
+						speed: getMachinerySpeed(def),
+						phase: Math.random() * Math.PI * 2,
+						targetTimer: 1.2 + Math.random() * 3.2,
+						life: 45 + Math.random() * 55,
+						hover
+					};
+
+					machineries.push(machine);
+					scene.add(group);
+					pickMachineryTarget(machine, Math.floor(Math.random() * 10_000));
+					return true;
+				};
+
+				const purchaseMachinery = (machine: MachineryInstance) => {
+					const cost = getMachineryCost(machine.def.id);
+					if (!spendCrypto(cost)) {
+						showToast(`Not enough SC for ${machine.def.name} (${cost} SC).`, 'warn');
+						return false;
+					}
+					ownedMachinery = {
+						...ownedMachinery,
+						[machine.def.id]: (ownedMachinery[machine.def.id] ?? 0) + 1
+					};
+					saveGameState();
+					showToast(`Purchased ${machine.def.name} for ${cost} SC.`, 'info');
+					scene.remove(machine.group);
+					const idx = machineries.indexOf(machine);
+					if (idx >= 0) {
+						machineries.splice(idx, 1);
+					}
+					machinerySpawnTimer = Math.min(machinerySpawnTimer, 2.5);
+					return true;
+				};
+
+				type CardDef = (typeof CARD_CATALOG)[number];
+
+				type CardInstance = {
+					def: CardDef;
+					sprite: THREE.Sprite;
+					position: THREE.Vector3;
+					phase: number;
+					life: number;
+				};
+
+				const cards: CardInstance[] = [];
+
+				const clearCards = () => {
+					for (const card of cards) {
+						scene.remove(card.sprite);
+					}
+					cards.length = 0;
+				};
+
+				const CARD_REWARD_BY_RARITY: Record<Rarity, number> = {
+					common: 14,
+					uncommon: 28,
+					rare: 60,
+					epic: 120,
+					legendary: 250
+				};
+
+				const spawnCard = () => {
+					const def = weightedPick(CARD_CATALOG, (entry) => raritySpawnWeight(entry.rarity));
+					if (!def) return false;
+					const spot = findSpawnSpotNearPlayer(10, 52);
+					if (!spot) return false;
+					const sprite = new THREE.Sprite(getCardMat(def));
+					sprite.position.set(spot.x, spot.y + 1.35, spot.z);
+					sprite.scale.set(1.2, 0.82, 1);
+					scene.add(sprite);
+					cards.push({
+						def,
+						sprite,
+						position: sprite.position.clone(),
+						phase: Math.random() * Math.PI * 2,
+						life: 55 + Math.random() * 70
+					});
+					return true;
+				};
+
+				const collectCard = (card: CardInstance) => {
+					const reward = CARD_REWARD_BY_RARITY[card.def.rarity] ?? 10;
+					collectedCards = {
+						...collectedCards,
+						[card.def.id]: (collectedCards[card.def.id] ?? 0) + 1
+					};
+					addCrypto(reward);
+					showToast(`Found ${card.def.name}. +${reward} SC`, 'info');
+					scene.remove(card.sprite);
+					const idx = cards.indexOf(card);
+					if (idx >= 0) {
+						cards.splice(idx, 1);
+					}
+					cardSpawnTimer = Math.min(cardSpawnTimer, 2.5);
+				};
+
+				const resetWorldFindables = () => {
+					clearMachinery();
+					clearCards();
+					interactRequested = false;
+					interactionHint = null;
+					interactionActionLabel = null;
+					machinerySpawnTimer = THREE.MathUtils.randFloat(6, 10);
+					cardSpawnTimer = THREE.MathUtils.randFloat(3, 6);
+
+					// Initial pop so there's always something to find after switching worlds.
+					for (let i = 0; i < 2; i += 1) spawnMachinery();
+					for (let i = 0; i < 4; i += 1) spawnCard();
+				};
+
+				const machineryMaxActive = 3;
+				let machinerySpawnTimer = 7;
+				const cardsMaxActive = 9;
+				let cardSpawnTimer = 4;
+
 				const bgmCache = new Map<string, HTMLAudioElement>();
 				const fadingOut: HTMLAudioElement[] = [];
 				let audioUnlocked = false;
@@ -3584,8 +4528,13 @@
 						case 'Digit6':
 						case 'Digit7':
 						case 'Digit8':
-						case 'Digit9':
+					case 'Digit9':
 							selectedHotbar = Math.min(HOTBAR_SLOTS - 1, Math.max(0, Number(event.code.replace('Digit', '')) - 1));
+							break;
+						case 'KeyE':
+							if (!event.repeat) {
+								requestInteract();
+							}
 							break;
 						default:
 							break;
@@ -4106,6 +5055,7 @@
 					verticalVelocity = 0;
 					grounded = false;
 				}
+				resetWorldFindables();
 				syncChunks(player.position.x, player.position.z, true);
 				portalCooldown = 1.1;
 			};
@@ -4357,6 +5307,9 @@
 				const isTransitioning = portalTransition !== null;
 				if (isTransitioning) {
 					input.jump = false;
+					if (interactionHint !== null) interactionHint = null;
+					if (interactionActionLabel !== null) interactionActionLabel = null;
+					interactRequested = false;
 				}
 
 				const analogTurn = moveAxis.x;
@@ -4590,6 +5543,123 @@
 							const fluidSurface = Math.max(currentWorld.fluids.waterLevel, currentWorld.fluids.lavaLevel);
 							const desiredY = Math.max(surface, fluidSurface) + 0.25;
 							critter.group.position.y += (desiredY - critter.group.position.y) * Math.min(1, delta * 8);
+						}
+
+						machinerySpawnTimer -= delta;
+						if (machineries.length < machineryMaxActive && machinerySpawnTimer <= 0) {
+							const spawned = spawnMachinery();
+							machinerySpawnTimer = THREE.MathUtils.randFloat(8, 14) + (spawned ? 0 : 2.5);
+						} else if (machineries.length >= machineryMaxActive) {
+							machinerySpawnTimer = Math.max(machinerySpawnTimer, 1);
+						}
+
+						cardSpawnTimer -= delta;
+						if (cards.length < cardsMaxActive && cardSpawnTimer <= 0) {
+							const spawned = spawnCard();
+							cardSpawnTimer = THREE.MathUtils.randFloat(4, 9) + (spawned ? 0 : 2);
+						} else if (cards.length >= cardsMaxActive) {
+							cardSpawnTimer = Math.max(cardSpawnTimer, 1);
+						}
+
+						let nearestMachine: MachineryInstance | null = null;
+						let nearestMachineDist = Number.POSITIVE_INFINITY;
+						const buyRadius = 3.2;
+
+						for (let i = machineries.length - 1; i >= 0; i -= 1) {
+							const machine = machineries[i];
+							machine.life -= delta;
+							if (machine.life <= 0) {
+								scene.remove(machine.group);
+								machineries.splice(i, 1);
+								machinerySpawnTimer = Math.min(machinerySpawnTimer, 3.5);
+								continue;
+							}
+
+							machine.targetTimer -= delta;
+							let dx = machine.target.x - machine.group.position.x;
+							let dz = machine.target.y - machine.group.position.z;
+							let distSq = dx * dx + dz * dz;
+							if (machine.targetTimer <= 0 || distSq < 1.2 * 1.2) {
+								pickMachineryTarget(machine, i * 311 + Math.floor(time * 9));
+								dx = machine.target.x - machine.group.position.x;
+								dz = machine.target.y - machine.group.position.z;
+								distSq = dx * dx + dz * dz;
+							}
+
+							if (distSq > 0.0001) {
+								const dist = Math.sqrt(distSq);
+								const step = machine.speed * delta;
+								const stepScale = Math.min(step / dist, 1);
+								machine.group.position.x += dx * stepScale;
+								machine.group.position.z += dz * stepScale;
+								machine.group.rotation.y = Math.atan2(dx, dz);
+								machine.phase += delta * (1.2 + machine.speed * 0.4);
+							}
+
+							const mx = Math.round(machine.group.position.x);
+							const mz = Math.round(machine.group.position.z);
+							const surface = getHeightAt(mx, mz);
+							const fluidSurface = Math.max(currentWorld.fluids.waterLevel, currentWorld.fluids.lavaLevel);
+							const bob = Math.sin(time * 2.4 + machine.phase) * 0.08;
+							const desiredY = Math.max(surface, fluidSurface) + machine.hover + bob;
+							machine.group.position.y += (desiredY - machine.group.position.y) * Math.min(1, delta * 6);
+
+							const dxp = player.position.x - machine.group.position.x;
+							const dzp = player.position.z - machine.group.position.z;
+							const dist = Math.hypot(dxp, dzp);
+							if (dist < nearestMachineDist) {
+								nearestMachineDist = dist;
+								nearestMachine = machine;
+							}
+						}
+
+						for (let i = cards.length - 1; i >= 0; i -= 1) {
+							const card = cards[i];
+							card.life -= delta;
+							if (card.life <= 0) {
+								scene.remove(card.sprite);
+								cards.splice(i, 1);
+								cardSpawnTimer = Math.min(cardSpawnTimer, 2.5);
+								continue;
+							}
+							const bob = Math.sin(time * 2.6 + card.phase) * 0.12;
+							const pulse = 1 + Math.sin(time * 3.4 + card.phase) * 0.05;
+							card.sprite.position.set(card.position.x, card.position.y + bob, card.position.z);
+							card.sprite.scale.set(1.2 * pulse, 0.82 * pulse, 1);
+
+							const dxp = player.position.x - card.sprite.position.x;
+							const dzp = player.position.z - card.sprite.position.z;
+							if (dxp * dxp + dzp * dzp <= 1.45 * 1.45) {
+								collectCard(card);
+							}
+						}
+
+						let nextHint: string | null = null;
+						let nextAction: string | null = null;
+						if (nearestMachine && nearestMachineDist <= buyRadius) {
+							const cost = getMachineryCost(nearestMachine.def.id);
+							const rarityLabel = RARITY_LABEL[nearestMachine.def.rarity];
+							if (crypto >= cost) {
+								nextHint = `Press E to buy ${nearestMachine.def.name} (${rarityLabel}) for ${cost} SC`;
+								nextAction = 'Buy';
+							} else {
+								nextHint = `${nearestMachine.def.name} (${rarityLabel}) costs ${cost} SC. You have ${crypto} SC.`;
+							}
+						}
+						if (interactionHint !== nextHint) interactionHint = nextHint;
+						if (interactionActionLabel !== nextAction) interactionActionLabel = nextAction;
+
+						if (interactRequested) {
+							interactRequested = false;
+							if (nearestMachine && nearestMachineDist <= buyRadius) {
+								const purchased = purchaseMachinery(nearestMachine);
+								if (purchased) {
+									interactionHint = null;
+									interactionActionLabel = null;
+								}
+							} else {
+								showToast('No machinery close enough to buy.', 'warn');
+							}
 						}
 					}
 
@@ -4926,6 +5996,14 @@
 				renderer.domElement.removeEventListener('pointercancel', handleLookUp);
 				container?.removeChild(renderer.domElement);
 				worldJump = null;
+				if (toastTimeout) {
+					clearTimeout(toastTimeout);
+					toastTimeout = null;
+				}
+				hudToast = null;
+				interactionHint = null;
+				interactionActionLabel = null;
+				interactRequested = false;
 
 						blockGeo.dispose();
 						fallingBlockGeo.dispose();
@@ -5046,6 +6124,31 @@
 					spiderMat.dispose();
 					spiderEyeMat.dispose();
 					crabMat.dispose();
+					clearMachinery();
+					clearCards();
+					machineryHullMat.dispose();
+					machineryDetailMat.dispose();
+					machineryGlassMat.dispose();
+					for (const mat of rarityAccentMats.values()) {
+						mat.dispose();
+					}
+					rarityAccentMats.clear();
+					for (const mat of machineryLabelMats.values()) {
+						mat.dispose();
+					}
+					machineryLabelMats.clear();
+					for (const tex of machineryLabelTextures.values()) {
+						tex.dispose();
+					}
+					machineryLabelTextures.clear();
+					for (const mat of cardMats.values()) {
+						mat.dispose();
+					}
+					cardMats.clear();
+					for (const tex of cardTextures.values()) {
+						tex.dispose();
+					}
+					cardTextures.clear();
 
 					clearChunks();
 					clearPortals();
@@ -5099,11 +6202,49 @@
 		<div class="hud">
 			<h1>Portal Biomes</h1>
 			<div class="status">World: {worldLabel}</div>
+			<div class="currency">SC: {formatCrypto(crypto)}</div>
 			<div class="world-buttons">
 					<button type="button" on:click={() => jumpWorld('earth')}>Earth</button>
 					<button type="button" on:click={() => jumpWorld('mars')}>Mars</button>
 					<button type="button" on:click={() => jumpWorld('moon')}>Moon</button>
 				</div>
+				<details class="collection">
+					<summary>Collection</summary>
+					<div class="collection-section">
+						<div class="collection-title">Machinery</div>
+						{#each MACHINERY_CATALOG as item (item.id)}
+							{#if getOwnedMachineryCount(item.id) > 0}
+								<div class="collection-row">
+									<div class="collection-name">{item.name}</div>
+									<div class="collection-meta">
+										<span class="collection-rarity">{RARITY_LABEL[item.rarity]}</span>
+										<span class="collection-count">x{getOwnedMachineryCount(item.id)}</span>
+									</div>
+								</div>
+							{/if}
+						{/each}
+						{#if !MACHINERY_CATALOG.some((entry) => getOwnedMachineryCount(entry.id) > 0)}
+							<div class="collection-empty">No machinery yet. Catch and buy wandering machinery.</div>
+						{/if}
+					</div>
+					<div class="collection-section">
+						<div class="collection-title">Cards</div>
+						{#each CARD_CATALOG as card (card.id)}
+							{#if getCollectedCardCount(card.id) > 0}
+								<div class="collection-row">
+									<div class="collection-name">{card.name}</div>
+									<div class="collection-meta">
+										<span class="collection-rarity">{RARITY_LABEL[card.rarity]}</span>
+										<span class="collection-count">x{getCollectedCardCount(card.id)}</span>
+									</div>
+								</div>
+							{/if}
+						{/each}
+						{#if !CARD_CATALOG.some((entry) => getCollectedCardCount(entry.id) > 0)}
+							<div class="collection-empty">No cards yet. Explore to find tickets.</div>
+						{/if}
+					</div>
+				</details>
 				{#if debugCameraEnabled}
 					<details class="debug-camera">
 						<summary>Debug Camera</summary>
@@ -5163,9 +6304,22 @@
 						</div>
 					</details>
 				{/if}
-				<p>Walk into a portal to swap worlds. W / A / S / D or Arrow keys. Click the world to capture the mouse (Esc to release), then move to look. Space to jump. Hold left click (or touch and hold) to mine the highlighted block and collect it into your hotbar. Right click to place the selected hotbar block (keys 1-9).</p>
+				<p>Walk into a portal to swap worlds. W / A / S / D or Arrow keys. Click the world to capture the mouse (Esc to release), then move to look. Space to jump. Hold left click (or touch and hold) to mine the highlighted block and collect it into your hotbar. Right click to place the selected hotbar block (keys 1-9). Press E near wandering machinery to buy it with SC. Explore to find collectible tickets.</p>
 			</div>
 			<div class="scene" bind:this={container}></div>
+			{#if hudToast}
+				<div class="toast" class:warn={hudToast.tone === 'warn'} class:error={hudToast.tone === 'error'}>
+					{hudToast.text}
+				</div>
+			{/if}
+			{#if interactionHint}
+				<div class="interaction">
+					<div class="interaction-text">{interactionHint}</div>
+					{#if interactionActionLabel}
+						<button type="button" on:click={requestInteract}>{interactionActionLabel}</button>
+					{/if}
+				</div>
+			{/if}
 			<div class="crosshair" aria-hidden="true"></div>
 			<div class="hotbar" aria-label="Backpack">
 			{#each hotbar as slot, idx}
@@ -5186,6 +6340,11 @@
 				<div class="thumb" bind:this={joystickThumbEl}></div>
 			</div>
 			<div class="touch-pad jump" bind:this={jumpEl}>Jump</div>
+			{#if interactionActionLabel}
+				<button type="button" class="touch-pad interact" on:pointerdown|preventDefault={() => requestInteract()}>
+					{interactionActionLabel}
+				</button>
+			{/if}
 		</div>
 	</div>
 
@@ -5259,6 +6418,14 @@
 		margin-bottom: 6px;
 	}
 
+	.hud .currency {
+		font-size: 12px;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+		color: rgba(249, 209, 140, 0.95);
+		margin-bottom: 8px;
+	}
+
 	.world-buttons {
 		display: flex;
 		gap: 8px;
@@ -5293,6 +6460,76 @@
 			margin: 0;
 			font-size: 13px;
 			opacity: 0.85;
+		}
+
+		.collection {
+			margin-top: 10px;
+			padding-top: 10px;
+			border-top: 1px solid rgba(143, 177, 185, 0.22);
+		}
+
+		.collection summary {
+			cursor: pointer;
+			user-select: none;
+			font-size: 11px;
+			letter-spacing: 0.14em;
+			text-transform: uppercase;
+			color: rgba(183, 241, 255, 0.9);
+			outline: none;
+		}
+
+		.collection-section {
+			margin-top: 10px;
+			display: grid;
+			gap: 6px;
+		}
+
+		.collection-title {
+			font-size: 10px;
+			letter-spacing: 0.16em;
+			text-transform: uppercase;
+			color: rgba(183, 241, 255, 0.75);
+		}
+
+		.collection-row {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 12px;
+			font-size: 12px;
+			padding: 6px 8px;
+			border-radius: 10px;
+			background: rgba(8, 12, 15, 0.38);
+			border: 1px solid rgba(143, 177, 185, 0.22);
+		}
+
+		.collection-name {
+			color: rgba(232, 243, 246, 0.92);
+		}
+
+		.collection-meta {
+			display: flex;
+			gap: 10px;
+			align-items: baseline;
+			font-variant-numeric: tabular-nums;
+			color: rgba(232, 243, 246, 0.75);
+		}
+
+		.collection-rarity {
+			font-size: 11px;
+			letter-spacing: 0.1em;
+			text-transform: uppercase;
+			color: rgba(183, 241, 255, 0.78);
+		}
+
+		.collection-count {
+			font-weight: 600;
+			color: rgba(249, 209, 140, 0.9);
+		}
+
+		.collection-empty {
+			font-size: 12px;
+			opacity: 0.75;
 		}
 
 		.debug-camera {
@@ -5466,7 +6703,76 @@
 		z-index: 3;
 	}
 
+	.toast {
+		position: absolute;
+		left: 50%;
+		top: calc(18px + env(safe-area-inset-top));
+		transform: translateX(-50%);
+		z-index: 6;
+		padding: 10px 14px;
+		border-radius: 999px;
+		background: rgba(10, 16, 20, 0.8);
+		backdrop-filter: blur(10px);
+		border: 1px solid rgba(143, 177, 185, 0.35);
+		color: rgba(232, 243, 246, 0.92);
+		font-size: 12px;
+		letter-spacing: 0.06em;
+		max-width: min(92vw, 560px);
+		text-align: center;
+	}
+
+	.toast.warn {
+		border-color: rgba(249, 209, 140, 0.55);
+	}
+
+	.toast.error {
+		border-color: rgba(255, 100, 90, 0.6);
+		color: rgba(255, 221, 214, 0.95);
+	}
+
+	.interaction {
+		position: absolute;
+		left: 50%;
+		bottom: calc(92px + env(safe-area-inset-bottom));
+		transform: translateX(-50%);
+		z-index: 6;
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 10px 12px;
+		border-radius: 16px;
+		background: rgba(12, 18, 22, 0.62);
+		backdrop-filter: blur(10px);
+		border: 1px solid rgba(143, 177, 185, 0.35);
+		pointer-events: none;
+	}
+
+	.interaction-text {
+		font-size: 12px;
+		color: rgba(232, 243, 246, 0.9);
+		letter-spacing: 0.06em;
+	}
+
+	.interaction button {
+		pointer-events: auto;
+		appearance: none;
+		border: 1px solid rgba(249, 209, 140, 0.7);
+		background: rgba(249, 209, 140, 0.12);
+		color: rgba(255, 250, 242, 0.95);
+		border-radius: 999px;
+		padding: 8px 12px;
+		font-size: 11px;
+		letter-spacing: 0.12em;
+		text-transform: uppercase;
+		cursor: pointer;
+	}
+
+	.interaction button:hover {
+		background: rgba(249, 209, 140, 0.18);
+	}
+
 	.touch-pad {
+		appearance: none;
 		position: absolute;
 		width: 96px;
 		height: 96px;
@@ -5493,6 +6799,14 @@
 	.touch-pad.jump {
 		right: calc(18px + env(safe-area-inset-right));
 		bottom: calc(18px + env(safe-area-inset-bottom));
+	}
+
+	.touch-pad.interact {
+		right: calc(18px + env(safe-area-inset-right));
+		bottom: calc(122px + env(safe-area-inset-bottom));
+		width: 110px;
+		height: 64px;
+		border-radius: 18px;
 	}
 
 	
