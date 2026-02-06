@@ -95,14 +95,20 @@
 
 		const GAME_STATE_STORAGE_KEY = 'steal:game-state-v1';
 
-		let crypto = 120;
+		let crypto = 320;
+		const STARTUP_GRANT_SC = 320;
+		let startupGrantClaimed = false;
 		let ownedMachinery: Partial<Record<MachineryId, number>> = {};
 		let collectedCards: Partial<Record<CardId, number>> = {};
 
 		let hudToast: { text: string; tone: 'info' | 'warn' | 'error' } | null = null;
-		let interactionHint: string | null = null;
-		let interactionActionLabel: string | null = null;
-		let interactRequested = false;
+			let interactionHint: string | null = null;
+			let interactionActionLabel: string | null = null;
+			let interactionAltActionLabel: string | null = null;
+			let canDisembark = false;
+			let interactRequested = false;
+			let altInteractRequested = false;
+			let disembarkRequested = false;
 
 		const getOwnedMachineryCount = (id: MachineryId) => ownedMachinery[id] ?? 0;
 		const getCollectedCardCount = (id: CardId) => collectedCards[id] ?? 0;
@@ -118,6 +124,14 @@
 
 		const requestInteract = () => {
 			interactRequested = true;
+		};
+
+		const requestAltInteract = () => {
+			altInteractRequested = true;
+		};
+
+		const requestDisembark = () => {
+			disembarkRequested = true;
 		};
 
 		const addToInventory = (type: BlockType, amount = 1) => {
@@ -150,14 +164,17 @@
 			return true;
 		};
 
-		let container: HTMLDivElement | null = null;
-		let joystickEl: HTMLDivElement | null = null;
-		let joystickThumbEl: HTMLDivElement | null = null;
-		let jumpEl: HTMLDivElement | null = null;
-		let worldLabel = 'Verdant Expanse';
-		let worldJump: ((id: 'earth' | 'mars' | 'moon') => void) | null = null;
+			let container: HTMLDivElement | null = null;
+			let joystickEl: HTMLDivElement | null = null;
+			let joystickThumbEl: HTMLDivElement | null = null;
+			let jumpEl: HTMLDivElement | null = null;
+			let downEl: HTMLDivElement | null = null;
+			let worldLabel = 'Verdant Expanse';
+			let worldJump: ((id: 'earth' | 'mars' | 'moon') => void) | null = null;
+			let deployMachinery: ((id: MachineryId) => void) | null = null;
 
-		const jumpWorld = (id: 'earth' | 'mars' | 'moon') => worldJump?.(id);
+			const jumpWorld = (id: 'earth' | 'mars' | 'moon') => worldJump?.(id);
+			const deployOwned = (id: MachineryId) => deployMachinery?.(id);
 
 		const DEBUG_CAMERA_STORAGE_KEY = 'steal:debug-camera-v1';
 		const DEBUG_CAMERA_DEFAULT = { x: 2.4, y: 2.4, z: 7.6 }; // relative to player head-top
@@ -235,12 +252,14 @@
 			try {
 				const raw = localStorage.getItem(GAME_STATE_STORAGE_KEY);
 				if (!raw) {
+					startupGrantClaimed = true;
 					return;
 				}
 				const parsed = JSON.parse(raw) as Partial<Record<string, unknown>> | null;
 				if (!parsed || typeof parsed !== 'object') {
 					return;
 				}
+				startupGrantClaimed = Boolean(parsed.startupGrantClaimed);
 				if (typeof parsed.crypto === 'number' && Number.isFinite(parsed.crypto)) {
 					crypto = Math.max(0, Math.floor(parsed.crypto));
 				}
@@ -264,6 +283,13 @@
 					}
 					collectedCards = next;
 				}
+
+				// One-time grant so players can meaningfully rent/buy machinery even on older saves.
+				if (!startupGrantClaimed && crypto < STARTUP_GRANT_SC) {
+					crypto = STARTUP_GRANT_SC;
+					startupGrantClaimed = true;
+					saveGameState();
+				}
 			} catch {
 				// ignore
 			}
@@ -277,8 +303,9 @@
 				localStorage.setItem(
 					GAME_STATE_STORAGE_KEY,
 					JSON.stringify({
-						v: 1,
+						v: 2,
 						crypto,
+						startupGrantClaimed,
 						ownedMachinery,
 						collectedCards
 					})
@@ -3761,6 +3788,19 @@
 
 				type MachineryDef = (typeof MACHINERY_CATALOG)[number];
 
+				type VehicleMode = 'hover' | 'flight' | 'jetpack';
+
+				type MachineryParts = {
+					rotors: THREE.Object3D[];
+					wheels: THREE.Object3D[];
+					gyros: THREE.Object3D[];
+					arms: THREE.Object3D[];
+					thrusters: THREE.Object3D[];
+					thrusterPoints: THREE.Vector3[]; // local-space emission points for particles
+					seatHeight: number; // camera anchor (relative to group origin)
+					interactRadius: number;
+				};
+
 				type MachineryInstance = {
 					def: MachineryDef;
 					group: THREE.Group;
@@ -3772,9 +3812,20 @@
 					targetTimer: number;
 					life: number;
 					hover: number;
+					parts: MachineryParts;
+					isOwned: boolean;
+					boarded: boolean;
+					rentalRemaining: number; // seconds; 0 when inactive, Infinity for owned
+					rentalCost: number;
+					rentalDuration: number;
+					desiredHover: number; // hover height above surface when boarded (hover mode)
+					lastPos: THREE.Vector3;
+					wheelRoll: number;
 				};
 
 				const machineries: MachineryInstance[] = [];
+				let activeMachine: MachineryInstance | null = null;
+				let deployedOwnedMachine: MachineryInstance | null = null;
 				const machineryLabelTextures = new Map<MachineryId, THREE.Texture>();
 				const machineryLabelMats = new Map<MachineryId, THREE.SpriteMaterial>();
 
@@ -3832,11 +3883,16 @@
 						ctx.font = 'bold 30px "Space Grotesk", sans-serif';
 						ctx.textAlign = 'center';
 						ctx.textBaseline = 'middle';
-						const cost = getMachineryCost(def.id);
-						ctx.fillText(`${def.name}  •  ${cost} SC`, canvas.width / 2, 44);
+						const purchaseCost = getMachineryCost(def.id);
+						const rent = getRentalOffer(def);
+						ctx.fillText(`${def.name}`, canvas.width / 2, 38);
 						ctx.fillStyle = 'rgba(183, 241, 255, 0.85)';
 						ctx.font = 'bold 16px "Space Grotesk", sans-serif';
-						ctx.fillText(`${RARITY_LABEL[def.rarity]} ${def.category.toUpperCase()}`, canvas.width / 2, 74);
+						ctx.fillText(
+							`RENT ${rent.cost} SC / ${rent.duration}s  •  BUY ${purchaseCost} SC  •  ${RARITY_LABEL[def.rarity].toUpperCase()}`,
+							canvas.width / 2,
+							70
+						);
 					}
 					const texture = new THREE.CanvasTexture(canvas);
 					texture.colorSpace = THREE.SRGBColorSpace;
@@ -3967,12 +4023,14 @@
 					}
 				};
 
-				const clearMachinery = () => {
-					for (const machine of machineries) {
-						scene.remove(machine.group);
-					}
-					machineries.length = 0;
-				};
+					const clearMachinery = () => {
+						for (const machine of machineries) {
+							scene.remove(machine.group);
+						}
+						machineries.length = 0;
+						activeMachine = null;
+						deployedOwnedMachine = null;
+					};
 
 				const getMachinerySpeed = (def: MachineryDef) => {
 					if (def.category === 'ship') return 3.1;
@@ -3981,110 +4039,292 @@
 				};
 
 				const getMachineryHover = (def: MachineryDef) => {
-					if (def.category === 'ship') return 2.4;
-					if (def.category === 'transport') return 1.05;
-					return 0.65;
+					if (def.category === 'ship') return 4.8;
+					if (def.category === 'transport') return 1.4;
+					return 0.9;
+				};
+
+				const getVehicleMode = (def: MachineryDef): VehicleMode => {
+					if (def.category === 'ship') return 'flight';
+					if (def.category === 'transport') return 'hover';
+					return 'jetpack';
+				};
+
+				const getRentalOffer = (def: MachineryDef) => {
+					const purchaseCost = getMachineryCost(def.id);
+					const base = Math.max(12, Math.round(purchaseCost * 0.18));
+					const duration =
+						def.category === 'ship' ? 120
+							: def.category === 'transport' ? 100
+								: 90;
+					return { cost: base, duration };
+				};
+
+				const formatClock = (seconds: number) => {
+					const s = Math.max(0, Math.floor(seconds));
+					const m = Math.floor(s / 60);
+					const r = s % 60;
+					return `${m}:${String(r).padStart(2, '0')}`;
+				};
+
+				const getVehicleDriveSpeed = (def: MachineryDef) => {
+					// These are deliberately higher than NPC wander speeds.
+					const rarityMul = 0.9 + (RARITY_MULTIPLIER[def.rarity] - 1) * 0.06;
+					if (def.category === 'ship') return 14 * rarityMul;
+					if (def.category === 'transport') return 8 * rarityMul;
+					return 6.5 * rarityMul;
+				};
+
+				const getVehicleVerticalSpeed = (def: MachineryDef) => {
+					if (def.category === 'ship') return 9.5;
+					if (def.category === 'transport') return 4.5;
+					return 6.5;
+				};
+
+				const getVehicleMaxAltitudeAboveSurface = (def: MachineryDef) => {
+					if (def.category === 'ship') return 110;
+					if (def.category === 'transport') return 6.5;
+					return 18;
 				};
 
 				const createMachineryModel = (def: MachineryDef) => {
 					const group = new THREE.Group();
 					const accent = getRarityAccentMat(def.rarity);
+					const parts: MachineryParts = {
+						rotors: [],
+						wheels: [],
+						gyros: [],
+						arms: [],
+						thrusters: [],
+						thrusterPoints: [],
+						seatHeight: 2.2,
+						interactRadius: 4.2
+					};
+
+					const addThruster = (parent: THREE.Object3D, localPoint: THREE.Vector3, size = 0.35) => {
+						const thruster = new THREE.Mesh(blockGeo, machineryDetailMat);
+						thruster.scale.set(size * 0.9, size * 0.9, size * 0.9);
+						thruster.position.copy(localPoint);
+						parent.add(thruster);
+						parts.thrusters.push(thruster);
+
+						const glow = new THREE.Mesh(blockGeo, accent);
+						glow.scale.set(size * 0.45, size * 0.45, size * 0.25);
+						glow.position.set(0, 0, -size * 0.9);
+						thruster.add(glow);
+
+						// Particles emit behind the thruster; local to the *vehicle* group.
+						const emit = localPoint.clone();
+						emit.z -= size * 1.2;
+						parts.thrusterPoints.push(emit);
+					};
 
 					if (def.id === 'orbitalSkiff' || def.id === 'deepSpaceShuttle') {
+						parts.seatHeight = 3.25;
+						parts.interactRadius = 6.3;
+
 						const hull = new THREE.Mesh(blockGeo, machineryHullMat);
-						hull.scale.set(2.6, 0.6, 1.6);
-						hull.position.set(0, 0.6, 0);
+						hull.scale.set(8.6, 1.35, 3.6);
+						hull.position.set(0, 2.35, 0.1);
 						group.add(hull);
 
+						const nose = new THREE.Mesh(blockGeo, machineryDetailMat);
+						nose.scale.set(3.2, 0.75, 2.4);
+						nose.position.set(0, 2.45, 2.35);
+						group.add(nose);
+
 						const cockpit = new THREE.Mesh(blockGeo, machineryGlassMat);
-						cockpit.scale.set(1.3, 0.5, 0.9);
-						cockpit.position.set(0, 0.92, 0.3);
+						cockpit.scale.set(2.6, 0.95, 1.9);
+						cockpit.position.set(0, 2.95, 1.8);
 						group.add(cockpit);
 
+						for (const s of [-1, 1] as const) {
+							const wing = new THREE.Mesh(blockGeo, machineryDetailMat);
+							wing.scale.set(3.9, 0.22, 1.65);
+							wing.position.set(s * 6.05, 2.15, 0.2);
+							group.add(wing);
+
+							const tip = new THREE.Mesh(blockGeo, accent);
+							tip.scale.set(0.7, 0.18, 0.7);
+							tip.position.set(s * 1.95, 0.05, -0.2);
+							wing.add(tip);
+						}
+
 						const fin = new THREE.Mesh(blockGeo, accent);
-						fin.scale.set(0.22, 1.1, 0.22);
-						fin.position.set(0, 1.25, -0.55);
+						fin.scale.set(0.5, 2.9, 0.5);
+						fin.position.set(0, 4.3, -1.5);
 						group.add(fin);
 
-						for (const s of [-1, 1] as const) {
-							const engine = new THREE.Mesh(blockGeo, machineryDetailMat);
-							engine.scale.set(0.55, 0.35, 0.55);
-							engine.position.set(s * 1.05, 0.6, -0.55);
-							group.add(engine);
+						// Rotating “gravity ring”
+						const ring = new THREE.Group();
+						ring.position.set(0, 2.55, 0.1);
+						const ringCount = 14;
+						for (let i = 0; i < ringCount; i += 1) {
+							const angle = (i / ringCount) * Math.PI * 2;
+							const cube = new THREE.Mesh(blockGeo, accent);
+							cube.scale.set(0.35, 0.35, 0.35);
+							cube.position.set(Math.cos(angle) * 4.6, Math.sin(angle) * 2.0, 0);
+							ring.add(cube);
+						}
+						group.add(ring);
+						parts.gyros.push(ring);
 
-							const glow = new THREE.Mesh(blockGeo, accent);
-							glow.scale.set(0.18, 0.18, 0.18);
-							glow.position.set(0, 0, -0.42);
-							engine.add(glow);
+						// Engines (rear)
+						const engineY = 2.05;
+						const engineZ = -2.6;
+						addThruster(group, new THREE.Vector3(-2.4, engineY, engineZ), 0.55);
+						addThruster(group, new THREE.Vector3(2.4, engineY, engineZ), 0.55);
+						if (def.id === 'deepSpaceShuttle') {
+							addThruster(group, new THREE.Vector3(0, engineY + 0.2, engineZ - 0.35), 0.62);
 						}
 					} else if (def.id === 'duneRover') {
-						const body = new THREE.Mesh(blockGeo, machineryHullMat);
-						body.scale.set(1.8, 0.5, 1.2);
-						body.position.set(0, 0.65, 0);
-						group.add(body);
+						parts.seatHeight = 2.05;
+						parts.interactRadius = 4.9;
+
+						const chassis = new THREE.Mesh(blockGeo, machineryHullMat);
+						chassis.scale.set(5.2, 0.85, 3.0);
+						chassis.position.set(0, 1.25, 0);
+						group.add(chassis);
 
 						const cab = new THREE.Mesh(blockGeo, machineryGlassMat);
-						cab.scale.set(0.8, 0.45, 0.7);
-						cab.position.set(0, 0.95, 0.25);
+						cab.scale.set(2.2, 0.95, 1.8);
+						cab.position.set(0.35, 1.95, 0.85);
 						group.add(cab);
 
-						for (const wx of [-0.75, 0.75] as const) {
-							for (const wz of [-0.45, 0.45] as const) {
-								const wheel = new THREE.Mesh(blockGeo, machineryDetailMat);
-								wheel.scale.set(0.35, 0.35, 0.35);
-								wheel.position.set(wx, 0.25, wz);
-								group.add(wheel);
-								const hub = new THREE.Mesh(blockGeo, accent);
-								hub.scale.set(0.12, 0.12, 0.12);
-								wheel.add(hub);
-							}
+						const rollBar = new THREE.Mesh(blockGeo, accent);
+						rollBar.scale.set(0.22, 1.5, 2.6);
+						rollBar.position.set(-1.2, 1.95, -0.15);
+						group.add(rollBar);
+
+						const wheelOffsets: Array<[number, number]> = [
+							[-2.1, 1.25],
+							[2.1, 1.25],
+							[-2.1, -1.25],
+							[2.1, -1.25]
+						];
+						for (const [wx, wz] of wheelOffsets) {
+							const wheel = new THREE.Mesh(blockGeo, machineryDetailMat);
+							wheel.scale.set(0.9, 0.9, 0.55);
+							wheel.position.set(wx, 0.6, wz);
+							group.add(wheel);
+							parts.wheels.push(wheel);
+							const hub = new THREE.Mesh(blockGeo, accent);
+							hub.scale.set(0.25, 0.25, 0.12);
+							wheel.add(hub);
 						}
+
+						const antenna = new THREE.Mesh(blockGeo, accent);
+						antenna.scale.set(0.1, 1.3, 0.1);
+						antenna.position.set(2.1, 2.25, -1.1);
+						group.add(antenna);
+						parts.rotors.push(antenna);
 					} else if (def.id === 'gravBike') {
+						parts.seatHeight = 1.95;
+						parts.interactRadius = 4.4;
+
 						const spine = new THREE.Mesh(blockGeo, machineryHullMat);
-						spine.scale.set(2.2, 0.32, 0.6);
-						spine.position.set(0, 0.55, 0);
+						spine.scale.set(6.2, 0.55, 1.35);
+						spine.position.set(0, 1.1, 0);
 						group.add(spine);
 
 						const seat = new THREE.Mesh(blockGeo, machineryDetailMat);
-						seat.scale.set(0.7, 0.35, 0.55);
-						seat.position.set(0.25, 0.72, 0);
+						seat.scale.set(1.8, 0.55, 1.2);
+						seat.position.set(0.8, 1.45, 0);
 						group.add(seat);
 
 						const nose = new THREE.Mesh(blockGeo, accent);
-						nose.scale.set(0.55, 0.18, 0.4);
-						nose.position.set(1.15, 0.58, 0);
+						nose.scale.set(1.6, 0.35, 1.0);
+						nose.position.set(0, 1.25, 2.7);
 						group.add(nose);
 
-						for (const s of [-1, 1] as const) {
-							const stabilizer = new THREE.Mesh(blockGeo, machineryDetailMat);
-							stabilizer.scale.set(0.12, 0.5, 0.7);
-							stabilizer.position.set(-0.75, 0.65, s * 0.55);
-							group.add(stabilizer);
+						const gyroFront = new THREE.Group();
+						gyroFront.position.set(0, 1.0, 2.1);
+						group.add(gyroFront);
+						parts.gyros.push(gyroFront);
+
+						const gyroBack = new THREE.Group();
+						gyroBack.position.set(0, 1.0, -1.8);
+						group.add(gyroBack);
+						parts.gyros.push(gyroBack);
+
+						for (const gyro of [gyroFront, gyroBack]) {
+							for (let i = 0; i < 10; i += 1) {
+								const angle = (i / 10) * Math.PI * 2;
+								const cube = new THREE.Mesh(blockGeo, accent);
+								cube.scale.set(0.22, 0.22, 0.22);
+								cube.position.set(Math.cos(angle) * 1.1, 0, Math.sin(angle) * 1.1);
+								gyro.add(cube);
+							}
 						}
+
+						addThruster(group, new THREE.Vector3(-0.8, 1.05, -2.7), 0.42);
+						addThruster(group, new THREE.Vector3(0.8, 1.05, -2.7), 0.42);
 					} else {
-						// Spacesuits
-						const torso = new THREE.Mesh(blockGeo, machineryDetailMat);
-						torso.scale.set(0.75, 0.95, 0.45);
-						torso.position.set(0, 0.82, 0);
+						// Exo-suit “equipment”: big enough to board; has jetpack parts.
+						parts.seatHeight = 2.35;
+						parts.interactRadius = 3.8;
+
+						const torso = new THREE.Mesh(blockGeo, machineryHullMat);
+						torso.scale.set(1.8, 2.15, 1.2);
+						torso.position.set(0, 2.0, 0);
 						group.add(torso);
 
 						const visor = new THREE.Mesh(blockGeo, machineryGlassMat);
-						visor.scale.set(0.65, 0.6, 0.65);
-						visor.position.set(0, 1.35, 0.1);
+						visor.scale.set(1.4, 1.0, 1.0);
+						visor.position.set(0, 3.0, 0.55);
 						group.add(visor);
 
-						const backpack = new THREE.Mesh(blockGeo, machineryHullMat);
-						backpack.scale.set(0.55, 0.75, 0.25);
-						backpack.position.set(0, 0.92, -0.35);
-						group.add(backpack);
+						const pelvis = new THREE.Mesh(blockGeo, machineryDetailMat);
+						pelvis.scale.set(1.5, 0.65, 1.1);
+						pelvis.position.set(0, 1.05, 0);
+						group.add(pelvis);
 
-						const badge = new THREE.Mesh(blockGeo, accent);
-						badge.scale.set(0.15, 0.15, 0.05);
-						badge.position.set(-0.22, 0.95, 0.26);
-						group.add(badge);
+						for (const s of [-1, 1] as const) {
+							const leg = new THREE.Mesh(blockGeo, machineryDetailMat);
+							leg.scale.set(0.55, 1.3, 0.55);
+							leg.position.set(s * 0.55, 0.45, 0);
+							group.add(leg);
+							parts.arms.push(leg);
+
+							const foot = new THREE.Mesh(blockGeo, accent);
+							foot.scale.set(0.7, 0.22, 1.0);
+							foot.position.set(0, -0.75, 0.25);
+							leg.add(foot);
+						}
+
+						const armPivotL = new THREE.Group();
+						armPivotL.position.set(-1.25, 2.45, 0);
+						group.add(armPivotL);
+						const armPivotR = armPivotL.clone();
+						armPivotR.position.x = 1.25;
+						group.add(armPivotR);
+						parts.arms.push(armPivotL, armPivotR);
+
+						for (const pivot of [armPivotL, armPivotR]) {
+							const upper = new THREE.Mesh(blockGeo, machineryDetailMat);
+							upper.scale.set(0.45, 1.05, 0.45);
+							upper.position.set(0, -0.55, 0);
+							pivot.add(upper);
+							const fore = new THREE.Mesh(blockGeo, machineryHullMat);
+							fore.scale.set(0.42, 0.9, 0.42);
+							fore.position.set(0, -1.25, 0);
+							pivot.add(fore);
+							const hand = new THREE.Mesh(blockGeo, accent);
+							hand.scale.set(0.5, 0.25, 0.7);
+							hand.position.set(0, -1.8, 0.2);
+							pivot.add(hand);
+						}
+
+						const jetpack = new THREE.Mesh(blockGeo, machineryHullMat);
+						jetpack.scale.set(1.45, 1.5, 0.55);
+						jetpack.position.set(0, 2.25, -0.95);
+						group.add(jetpack);
+
+						addThruster(group, new THREE.Vector3(-0.55, 1.95, -1.25), 0.42);
+						addThruster(group, new THREE.Vector3(0.55, 1.95, -1.25), 0.42);
 					}
 
-					return group;
+					return { group, parts };
 				};
 
 				const pickMachineryTarget = (machine: MachineryInstance, seed: number) => {
@@ -4153,15 +4393,17 @@
 					const spot = findSpawnSpotNearPlayer(16, 44);
 					if (!spot) return false;
 
-					const group = createMachineryModel(def);
+					const model = createMachineryModel(def);
+					const group = model.group;
 					const hover = getMachineryHover(def);
 					group.position.set(spot.x, spot.y + hover, spot.z);
 
 					const label = new THREE.Sprite(getMachineryLabelMat(def));
-					label.position.set(0, 2.25 + (def.category === 'ship' ? 1.1 : 0), 0);
-					label.scale.set(5.3, 1.2, 1);
+					label.position.set(0, model.parts.seatHeight + 2.35, 0);
+					label.scale.set(def.category === 'ship' ? 8.4 : 7.2, 1.35, 1);
 					group.add(label);
 
+					const rental = getRentalOffer(def);
 					const machine: MachineryInstance = {
 						def,
 						group,
@@ -4172,7 +4414,16 @@
 						phase: Math.random() * Math.PI * 2,
 						targetTimer: 1.2 + Math.random() * 3.2,
 						life: 45 + Math.random() * 55,
-						hover
+						hover,
+						parts: model.parts,
+						isOwned: false,
+						boarded: false,
+						rentalRemaining: 0,
+						rentalCost: rental.cost,
+						rentalDuration: rental.duration,
+						desiredHover: hover,
+						lastPos: group.position.clone(),
+						wheelRoll: 0
 					};
 
 					machineries.push(machine);
@@ -4181,25 +4432,289 @@
 					return true;
 				};
 
-				const purchaseMachinery = (machine: MachineryInstance) => {
-					const cost = getMachineryCost(machine.def.id);
-					if (!spendCrypto(cost)) {
-						showToast(`Not enough SC for ${machine.def.name} (${cost} SC).`, 'warn');
-						return false;
-					}
-					ownedMachinery = {
-						...ownedMachinery,
-						[machine.def.id]: (ownedMachinery[machine.def.id] ?? 0) + 1
-					};
-					saveGameState();
-					showToast(`Purchased ${machine.def.name} for ${cost} SC.`, 'info');
+				const removeMachineryInstance = (machine: MachineryInstance) => {
 					scene.remove(machine.group);
 					const idx = machineries.indexOf(machine);
 					if (idx >= 0) {
 						machineries.splice(idx, 1);
 					}
-					machinerySpawnTimer = Math.min(machinerySpawnTimer, 2.5);
-					return true;
+					if (activeMachine === machine) {
+						activeMachine = null;
+					}
+					if (deployedOwnedMachine === machine) {
+						deployedOwnedMachine = null;
+					}
+				};
+
+				const spawnMachineryInstance = (def: MachineryDef, spot: { x: number; y: number; z: number }, isOwned: boolean) => {
+					const model = createMachineryModel(def);
+					const group = model.group;
+					const hover = getMachineryHover(def);
+					group.position.set(spot.x, spot.y + hover, spot.z);
+
+					const label = new THREE.Sprite(getMachineryLabelMat(def));
+					label.position.set(0, model.parts.seatHeight + 2.35, 0);
+					label.scale.set(def.category === 'ship' ? 8.4 : 7.2, 1.35, 1);
+					group.add(label);
+
+					const rental = getRentalOffer(def);
+					const machine: MachineryInstance = {
+						def,
+						group,
+						label,
+						home: new THREE.Vector2(spot.x, spot.z),
+						target: new THREE.Vector2(spot.x, spot.z),
+						speed: isOwned ? 0 : getMachinerySpeed(def),
+						phase: Math.random() * Math.PI * 2,
+						targetTimer: isOwned ? 999 : 1.2 + Math.random() * 3.2,
+						life: isOwned ? Number.POSITIVE_INFINITY : 45 + Math.random() * 55,
+						hover,
+						parts: model.parts,
+						isOwned,
+						boarded: false,
+						rentalRemaining: isOwned ? Number.POSITIVE_INFINITY : 0,
+						rentalCost: rental.cost,
+						rentalDuration: rental.duration,
+						desiredHover: hover,
+						lastPos: group.position.clone(),
+						wheelRoll: 0
+					};
+
+					machineries.push(machine);
+					scene.add(group);
+					if (!isOwned) {
+						pickMachineryTarget(machine, Math.floor(Math.random() * 10_000));
+					}
+					return machine;
+				};
+
+					const deployOwnedMachinery = (id: MachineryId) => {
+						if ((ownedMachinery[id] ?? 0) <= 0) {
+							showToast('You do not own that machinery yet.', 'warn');
+							return null;
+						}
+					const def = MACHINERY_BY_ID.get(id);
+					if (!def) {
+						showToast('Unknown machinery id.', 'error');
+						return null;
+					}
+					if (deployedOwnedMachine) {
+						removeMachineryInstance(deployedOwnedMachine);
+					}
+					const spot =
+						findSpawnSpotNearPlayer(10, 18) ??
+						(() => {
+							const surface = getHeightAt(Math.round(player.position.x + 6), Math.round(player.position.z + 6));
+							return { x: player.position.x + 6, z: player.position.z + 6, y: surface + 0.25 };
+						})();
+						const machine = spawnMachineryInstance(def, { x: spot.x, y: spot.y, z: spot.z }, true);
+						deployedOwnedMachine = machine;
+						return machine;
+					};
+
+					deployMachinery = (id) => {
+						const machine = deployOwnedMachinery(id);
+						if (machine) {
+							showToast(`Deployed ${machine.def.name}.`, 'info');
+						}
+					};
+
+					const claimMachineryAsOwned = (machine: MachineryInstance) => {
+						if (machine.isOwned) {
+							return;
+						}
+						if (deployedOwnedMachine && deployedOwnedMachine !== machine) {
+							removeMachineryInstance(deployedOwnedMachine);
+						}
+						machine.isOwned = true;
+						machine.life = Number.POSITIVE_INFINITY;
+						machine.speed = 0;
+						machine.targetTimer = 999;
+						machine.rentalRemaining = Number.POSITIVE_INFINITY;
+						machine.home.set(machine.group.position.x, machine.group.position.z);
+						machine.target.copy(machine.home);
+						machine.label.visible = !machine.boarded;
+						deployedOwnedMachine = machine;
+					};
+
+					const purchaseMachinery = (machine: MachineryInstance) => {
+						if (machine.isOwned) {
+							showToast('This machinery is already owned.', 'warn');
+							return false;
+						}
+						const cost = getMachineryCost(machine.def.id);
+						if (!spendCrypto(cost)) {
+							showToast(`Not enough SC for ${machine.def.name} (${cost} SC).`, 'warn');
+							return false;
+						}
+					ownedMachinery = {
+							...ownedMachinery,
+							[machine.def.id]: (ownedMachinery[machine.def.id] ?? 0) + 1
+						};
+						saveGameState();
+						claimMachineryAsOwned(machine);
+						showToast(`Purchased ${machine.def.name} for ${cost} SC.`, 'info');
+						machinerySpawnTimer = Math.min(machinerySpawnTimer, 2.5);
+						return true;
+					};
+
+					const beginRental = (machine: MachineryInstance) => {
+						if (machine.isOwned) {
+							return true;
+						}
+						if (machine.rentalRemaining > 0) {
+							return true;
+						}
+						if (!spendCrypto(machine.rentalCost)) {
+							showToast(`Not enough SC to rent ${machine.def.name} (${machine.rentalCost} SC).`, 'warn');
+							return false;
+						}
+						machine.rentalRemaining = machine.rentalDuration;
+						machine.speed = 0;
+						machine.targetTimer = 999;
+						showToast(`Rented ${machine.def.name} for ${machine.rentalCost} SC (${machine.rentalDuration}s).`, 'info');
+						return true;
+					};
+
+					const extendRental = (machine: MachineryInstance) => {
+						if (machine.isOwned || !Number.isFinite(machine.rentalRemaining) || machine.rentalRemaining <= 0) {
+							return true;
+						}
+						if (!spendCrypto(machine.rentalCost)) {
+							showToast(`Not enough SC to extend rental (${machine.rentalCost} SC).`, 'warn');
+							return false;
+						}
+						machine.rentalRemaining += machine.rentalDuration;
+						showToast(`Rental extended (+${machine.rentalDuration}s).`, 'info');
+						return true;
+					};
+
+					type VehicleParticle = {
+						mesh: THREE.Mesh;
+						velocity: THREE.Vector3;
+						life: number;
+				};
+
+				const vehicleParticles: VehicleParticle[] = [];
+				const vehicleParticleMats = new Map<Rarity, THREE.MeshStandardMaterial>();
+
+				const getVehicleParticleMat = (rarity: Rarity) => {
+					const cached = vehicleParticleMats.get(rarity);
+					if (cached) return cached;
+					const color = new THREE.Color(RARITY_COLOR[rarity]);
+					const mat = new THREE.MeshStandardMaterial({
+						color,
+						emissive: color,
+						emissiveIntensity: 1.15,
+						roughness: 0.35,
+						metalness: 0.2
+					});
+					vehicleParticleMats.set(rarity, mat);
+					return mat;
+				};
+
+				const spawnVehicleBurst = (position: THREE.Vector3, rarity: Rarity) => {
+					const mat = getVehicleParticleMat(rarity);
+					const count = 70;
+					for (let i = 0; i < count; i += 1) {
+						const mesh = new THREE.Mesh(portalParticleGeo, mat);
+						mesh.position.copy(position);
+						mesh.position.x += THREE.MathUtils.randFloatSpread(2);
+						mesh.position.y += THREE.MathUtils.randFloat(0.4, 2.6);
+						mesh.position.z += THREE.MathUtils.randFloatSpread(2);
+						const velocity = new THREE.Vector3(
+							THREE.MathUtils.randFloatSpread(2),
+							THREE.MathUtils.randFloat(1.2, 3.2),
+							THREE.MathUtils.randFloatSpread(2)
+						)
+							.normalize()
+							.multiplyScalar(THREE.MathUtils.randFloat(2.6, 6));
+						vehicleParticles.push({ mesh, velocity, life: THREE.MathUtils.randFloat(0.55, 1.25) });
+						scene.add(mesh);
+					}
+				};
+
+				const spawnThrusterTrail = (machine: MachineryInstance, intensity: number) => {
+					if (machine.parts.thrusterPoints.length === 0) return;
+					const mat = getVehicleParticleMat(machine.def.rarity);
+					const backDir = new THREE.Vector3(0, 0, -1).applyQuaternion(machine.group.quaternion);
+					const count = Math.max(1, Math.floor(machine.parts.thrusterPoints.length * intensity));
+					for (let i = 0; i < count; i += 1) {
+						const point = machine.parts.thrusterPoints[i % machine.parts.thrusterPoints.length];
+						const worldPoint = machine.group.localToWorld(new THREE.Vector3(point.x, point.y, point.z));
+						const mesh = new THREE.Mesh(portalParticleGeo, mat);
+						mesh.position.copy(worldPoint);
+						mesh.position.x += THREE.MathUtils.randFloatSpread(0.22);
+						mesh.position.y += THREE.MathUtils.randFloatSpread(0.18);
+						mesh.position.z += THREE.MathUtils.randFloatSpread(0.22);
+						const velocity = backDir
+							.clone()
+							.multiplyScalar(THREE.MathUtils.randFloat(3.4, 6.8) * intensity)
+							.add(
+								new THREE.Vector3(
+									THREE.MathUtils.randFloatSpread(0.9),
+									THREE.MathUtils.randFloatSpread(0.6),
+									THREE.MathUtils.randFloatSpread(0.9)
+								)
+							);
+						vehicleParticles.push({ mesh, velocity, life: THREE.MathUtils.randFloat(0.25, 0.55) });
+						scene.add(mesh);
+					}
+				};
+
+					const enterVehicle = (machine: MachineryInstance) => {
+						if (activeMachine) {
+							return;
+						}
+						activeMachine = machine;
+						machine.boarded = true;
+						machine.label.visible = false;
+						machine.desiredHover = machine.hover;
+						machine.wheelRoll = 0;
+						machine.lastPos.copy(machine.group.position);
+						player.rotation.y = machine.group.rotation.y + Math.PI;
+						playerBody.setNextKinematicTranslation({
+							x: machine.group.position.x,
+							y: machine.group.position.y,
+							z: machine.group.position.z
+						});
+						player.position.copy(machine.group.position);
+						verticalVelocity = 0;
+						grounded = false;
+						input.jump = false;
+						input.down = false;
+						spawnVehicleBurst(machine.group.position, machine.def.rarity);
+						showToast(`Boarded ${machine.def.name}.`, 'info');
+					};
+
+				const exitVehicle = (reason: 'manual' | 'expired') => {
+					const machine = activeMachine;
+					if (!machine) return;
+					activeMachine = null;
+					machine.boarded = false;
+					machine.label.visible = true;
+
+					spawnVehicleBurst(machine.group.position, machine.def.rarity);
+
+					// Place the player next to the vehicle, snapped to the surface.
+					const right = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), player.rotation.y);
+					const offset = right.multiplyScalar(machine.parts.interactRadius + 1.3);
+					const tx = Math.round(machine.group.position.x + offset.x);
+					const tz = Math.round(machine.group.position.z + offset.z);
+					const surface = getHeightAt(tx, tz);
+					const fluidSurface = Math.max(currentWorld.fluids.waterLevel, currentWorld.fluids.lavaLevel);
+					const ty = Math.max(surface, fluidSurface) + 0.25;
+					playerBody.setNextKinematicTranslation({ x: tx, y: ty, z: tz });
+					player.position.set(tx, ty, tz);
+					verticalVelocity = 0;
+					grounded = false;
+					syncChunks(tx, tz, true);
+
+					if (reason === 'expired') {
+						showToast('Rental expired. You were kicked out.', 'warn');
+					} else {
+						showToast('Disembarked.', 'info');
+					}
 				};
 
 				type CardDef = (typeof CARD_CATALOG)[number];
@@ -4264,24 +4779,31 @@
 					cardSpawnTimer = Math.min(cardSpawnTimer, 2.5);
 				};
 
-				const resetWorldFindables = () => {
-					clearMachinery();
-					clearCards();
-					interactRequested = false;
-					interactionHint = null;
-					interactionActionLabel = null;
-					machinerySpawnTimer = THREE.MathUtils.randFloat(6, 10);
-					cardSpawnTimer = THREE.MathUtils.randFloat(3, 6);
+					const resetWorldFindables = () => {
+						clearMachinery();
+						clearCards();
+						interactRequested = false;
+						altInteractRequested = false;
+						disembarkRequested = false;
+						canDisembark = false;
+						interactionHint = null;
+						interactionActionLabel = null;
+						interactionAltActionLabel = null;
+						machinerySpawnTimer = THREE.MathUtils.randFloat(6, 10);
+						cardSpawnTimer = THREE.MathUtils.randFloat(3, 6);
 
 					// Initial pop so there's always something to find after switching worlds.
 					for (let i = 0; i < 2; i += 1) spawnMachinery();
 					for (let i = 0; i < 4; i += 1) spawnCard();
 				};
 
-				const machineryMaxActive = 3;
-				let machinerySpawnTimer = 7;
-				const cardsMaxActive = 9;
-				let cardSpawnTimer = 4;
+					const machineryMaxActive = 3;
+					let machinerySpawnTimer = 7;
+					const cardsMaxActive = 9;
+					let cardSpawnTimer = 4;
+					const PASSIVE_INCOME_INTERVAL = 20;
+					const PASSIVE_INCOME_AMOUNT = 18;
+					let passiveIncomeTimer = PASSIVE_INCOME_INTERVAL;
 
 				const bgmCache = new Map<string, HTMLAudioElement>();
 				const fadingOut: HTMLAudioElement[] = [];
@@ -4495,7 +5017,8 @@
 				back: false,
 				left: false,
 				right: false,
-				jump: false
+				jump: false,
+				down: false
 			};
 
 				const handleKeyDown = (event: KeyboardEvent) => {
@@ -4520,6 +5043,12 @@
 						case 'Space':
 							input.jump = true;
 							break;
+						case 'ShiftLeft':
+						case 'ShiftRight':
+						case 'ControlLeft':
+						case 'ControlRight':
+							input.down = true;
+							break;
 						case 'Digit1':
 						case 'Digit2':
 						case 'Digit3':
@@ -4534,6 +5063,16 @@
 						case 'KeyE':
 							if (!event.repeat) {
 								requestInteract();
+							}
+							break;
+						case 'KeyB':
+							if (!event.repeat) {
+								requestAltInteract();
+							}
+							break;
+						case 'KeyF':
+							if (!event.repeat) {
+								requestDisembark();
 							}
 							break;
 						default:
@@ -4561,6 +5100,12 @@
 						break;
 					case 'Space':
 						input.jump = false;
+						break;
+					case 'ShiftLeft':
+					case 'ShiftRight':
+					case 'ControlLeft':
+					case 'ControlRight':
+						input.down = false;
 						break;
 					default:
 						break;
@@ -4617,7 +5162,8 @@
 					if (event.pointerType !== 'mouse' || !pointerLocked) {
 						return;
 					}
-					pointerState.lookYaw += event.movementX * 0.0024;
+					// three.js +Y yaw turns left; invert X so moving mouse right turns right.
+					pointerState.lookYaw -= event.movementX * 0.0024;
 					pointerState.lookPitch -= event.movementY * 0.0024;
 				};
 
@@ -4713,18 +5259,36 @@
 				event.stopPropagation();
 			};
 
-			const handleJumpUp = (event: PointerEvent) => {
-				if (event.pointerType === 'mouse') {
-					return;
-				}
-				input.jump = false;
-				event.stopPropagation();
-			};
-
-				const handleLookDown = (event: PointerEvent) => {
+				const handleJumpUp = (event: PointerEvent) => {
 					if (event.pointerType === 'mouse') {
 						return;
 					}
+					input.jump = false;
+					event.stopPropagation();
+				};
+
+				const handleDownDown = (event: PointerEvent) => {
+					if (event.pointerType === 'mouse') {
+						return;
+					}
+					ensureAudio();
+					input.down = true;
+					event.preventDefault();
+					event.stopPropagation();
+				};
+
+				const handleDownUp = (event: PointerEvent) => {
+					if (event.pointerType === 'mouse') {
+						return;
+					}
+					input.down = false;
+					event.stopPropagation();
+				};
+
+					const handleLookDown = (event: PointerEvent) => {
+						if (event.pointerType === 'mouse') {
+							return;
+						}
 					if (event.target instanceof HTMLElement && event.target.closest('.touch-pad')) {
 					return;
 				}
@@ -4748,7 +5312,7 @@
 				const dy = event.clientY - lookState.lastY;
 				lookState.lastX = event.clientX;
 				lookState.lastY = event.clientY;
-				pointerState.lookYaw += dx * 0.004;
+				pointerState.lookYaw -= dx * 0.004;
 				pointerState.lookPitch -= dy * 0.004;
 				event.preventDefault();
 			};
@@ -4767,17 +5331,20 @@
 					}
 				};
 
-			joystickEl?.addEventListener('pointerdown', handleJoystickDown, { passive: false });
-			joystickEl?.addEventListener('pointermove', handleJoystickMove, { passive: false });
-			joystickEl?.addEventListener('pointerup', handleJoystickUp);
-			joystickEl?.addEventListener('pointercancel', handleJoystickUp);
-			jumpEl?.addEventListener('pointerdown', handleJumpDown, { passive: false });
-			jumpEl?.addEventListener('pointerup', handleJumpUp);
-			jumpEl?.addEventListener('pointercancel', handleJumpUp);
-			renderer.domElement.addEventListener('pointerdown', handleLookDown, { passive: false });
-			renderer.domElement.addEventListener('pointermove', handleLookMove, { passive: false });
-			renderer.domElement.addEventListener('pointerup', handleLookUp);
-			renderer.domElement.addEventListener('pointercancel', handleLookUp);
+				joystickEl?.addEventListener('pointerdown', handleJoystickDown, { passive: false });
+				joystickEl?.addEventListener('pointermove', handleJoystickMove, { passive: false });
+				joystickEl?.addEventListener('pointerup', handleJoystickUp);
+				joystickEl?.addEventListener('pointercancel', handleJoystickUp);
+				jumpEl?.addEventListener('pointerdown', handleJumpDown, { passive: false });
+				jumpEl?.addEventListener('pointerup', handleJumpUp);
+				jumpEl?.addEventListener('pointercancel', handleJumpUp);
+				downEl?.addEventListener('pointerdown', handleDownDown, { passive: false });
+				downEl?.addEventListener('pointerup', handleDownUp);
+				downEl?.addEventListener('pointercancel', handleDownUp);
+				renderer.domElement.addEventListener('pointerdown', handleLookDown, { passive: false });
+				renderer.domElement.addEventListener('pointermove', handleLookMove, { passive: false });
+				renderer.domElement.addEventListener('pointerup', handleLookUp);
+				renderer.domElement.addEventListener('pointercancel', handleLookUp);
 
 				type Portal = {
 					targetId: WorldId;
@@ -5273,10 +5840,15 @@
 
 			applyWorld(currentWorld, false);
 
-			const tick = () => {
-				const delta = Math.min(clock.getDelta(), 0.05);
-				const time = clock.elapsedTime;
-				updateAudio(delta);
+				const tick = () => {
+					const delta = Math.min(clock.getDelta(), 0.05);
+					const time = clock.elapsedTime;
+					updateAudio(delta);
+					passiveIncomeTimer -= delta;
+					while (passiveIncomeTimer <= 0) {
+						passiveIncomeTimer += PASSIVE_INCOME_INTERVAL;
+						addCrypto(PASSIVE_INCOME_AMOUNT);
+					}
 
 				let isNight = false;
 				if (currentWorld.id === 'earth') {
@@ -5304,13 +5876,18 @@
 						portalTransition = null;
 					}
 				}
-				const isTransitioning = portalTransition !== null;
-				if (isTransitioning) {
-					input.jump = false;
-					if (interactionHint !== null) interactionHint = null;
-					if (interactionActionLabel !== null) interactionActionLabel = null;
-					interactRequested = false;
-				}
+					const isTransitioning = portalTransition !== null;
+					if (isTransitioning) {
+						input.jump = false;
+						input.down = false;
+						if (interactionHint !== null) interactionHint = null;
+						if (interactionActionLabel !== null) interactionActionLabel = null;
+						if (interactionAltActionLabel !== null) interactionAltActionLabel = null;
+						interactRequested = false;
+						altInteractRequested = false;
+						disembarkRequested = false;
+						canDisembark = false;
+					}
 
 				const analogTurn = moveAxis.x;
 				const analogMove = -moveAxis.y;
@@ -5330,71 +5907,155 @@
 				moveInput = THREE.MathUtils.clamp(moveInput, -0.6, 1.2);
 				player.rotation.y += turnInput * 1.6 * delta + pointerState.lookYaw;
 				pointerState.lookYaw = 0;
-				cameraPitch = THREE.MathUtils.clamp(
-					cameraPitch + pointerState.lookPitch,
-					minPitch,
-					maxPitch
-				);
-				pointerState.lookPitch = 0;
+					cameraPitch = THREE.MathUtils.clamp(
+						cameraPitch + pointerState.lookPitch,
+						minPitch,
+						maxPitch
+					);
+					pointerState.lookPitch = 0;
 
-				if (grounded && verticalVelocity < 0) {
-					verticalVelocity = 0;
-				}
-				if (input.jump && grounded) {
-					verticalVelocity = 7.2;
-					grounded = false;
-					input.jump = false;
-				}
-				verticalVelocity += gravity * delta;
+					const tntHits = new Set<FallingBlock>();
+					const pushHits = new Set<FallingBlock>();
+					let movementStrength = Math.min(Math.abs(moveInput), 1);
 
-				tempVec.copy(forwardBase).applyQuaternion(player.quaternion);
-				const desiredMovement = tempVec2
-					.copy(tempVec)
-					.multiplyScalar(4.2 * moveInput * delta);
-				desiredMovement.y = verticalVelocity * delta;
-
-				controller.computeColliderMovement(playerCollider, desiredMovement);
-				const tntHits = new Set<FallingBlock>();
-				const pushHits = new Set<FallingBlock>();
-				const collisionCount = controller.numComputedCollisions();
-				for (let i = 0; i < collisionCount; i += 1) {
-					const collision = controller.computedCollision(i);
-					const collider = collision?.collider;
-					if (!collider) {
-						continue;
+					let disembarkedThisFrame = false;
+					if (disembarkRequested) {
+						disembarkRequested = false;
+						if (activeMachine) {
+							exitVehicle('manual');
+							disembarkedThisFrame = true;
+						}
 					}
-					const block = blockByCollider.get(collider.handle);
-					if (!block || block.removed) {
-						continue;
-					}
-					if (block.isTnt) {
-						tntHits.add(block);
+
+					if (!disembarkedThisFrame) {
+						const drivingMachine = activeMachine;
+						const currentPos = playerBody.translation();
+
+						tempVec.copy(forwardBase).applyQuaternion(player.quaternion);
+						const desiredMovement = tempVec2.copy(tempVec);
+
+						if (drivingMachine) {
+							const mode = getVehicleMode(drivingMachine.def);
+							const driveSpeed = getVehicleDriveSpeed(drivingMachine.def);
+							const verticalSpeed = getVehicleVerticalSpeed(drivingMachine.def);
+							const maxAltitude = getVehicleMaxAltitudeAboveSurface(drivingMachine.def);
+
+							verticalVelocity = 0;
+							grounded = false;
+
+							desiredMovement.multiplyScalar(driveSpeed * moveInput * delta);
+
+							const verticalInput = (input.jump ? 1 : 0) + (input.down ? -1 : 0);
+							const fluidSurface = Math.max(currentWorld.fluids.waterLevel, currentWorld.fluids.lavaLevel);
+							const mx = Math.round(currentPos.x);
+							const mz = Math.round(currentPos.z);
+							const surface = getHeightAt(mx, mz);
+							const baseSurface = Math.max(surface, fluidSurface) + 0.25;
+
+							if (mode === 'hover') {
+								drivingMachine.desiredHover = THREE.MathUtils.clamp(
+									drivingMachine.desiredHover + verticalInput * verticalSpeed * delta,
+									drivingMachine.hover * 0.65,
+									maxAltitude
+								);
+								const bob = Math.sin(time * 2.1 + drivingMachine.phase) * 0.08;
+								const targetY = baseSurface + drivingMachine.desiredHover + bob;
+								desiredMovement.y = (targetY - currentPos.y) * Math.min(1, delta * 8);
+							} else {
+								desiredMovement.y = verticalInput * verticalSpeed * delta;
+							}
+						} else {
+							if (grounded && verticalVelocity < 0) {
+								verticalVelocity = 0;
+							}
+							if (input.jump && grounded) {
+								verticalVelocity = 7.2;
+								grounded = false;
+								input.jump = false;
+							}
+							verticalVelocity += gravity * delta;
+
+							desiredMovement.multiplyScalar(4.2 * moveInput * delta);
+							desiredMovement.y = verticalVelocity * delta;
+						}
+
+						controller.computeColliderMovement(playerCollider, desiredMovement);
+						const collisionCount = controller.numComputedCollisions();
+						for (let i = 0; i < collisionCount; i += 1) {
+							const collision = controller.computedCollision(i);
+							const collider = collision?.collider;
+							if (!collider) {
+								continue;
+							}
+							const block = blockByCollider.get(collider.handle);
+							if (!block || block.removed) {
+								continue;
+							}
+							if (block.isTnt) {
+								tntHits.add(block);
+							} else {
+								pushHits.add(block);
+							}
+						}
+
+						const actualMovement = controller.computedMovement();
+						const nextPos = {
+							x: currentPos.x + actualMovement.x,
+							y: currentPos.y + actualMovement.y,
+							z: currentPos.z + actualMovement.z
+						};
+
+						if (drivingMachine) {
+							const mode = getVehicleMode(drivingMachine.def);
+							const maxAltitude = getVehicleMaxAltitudeAboveSurface(drivingMachine.def);
+							const fluidSurface = Math.max(currentWorld.fluids.waterLevel, currentWorld.fluids.lavaLevel);
+							const mx = Math.round(nextPos.x);
+							const mz = Math.round(nextPos.z);
+							const surface = getHeightAt(mx, mz);
+							const baseSurface = Math.max(surface, fluidSurface) + 0.25;
+							const minY = baseSurface + (mode === 'hover' ? drivingMachine.hover * 0.65 : 0.25);
+							const maxY = baseSurface + maxAltitude;
+							nextPos.y = THREE.MathUtils.clamp(nextPos.y, minY, maxY);
+						}
+
+						playerBody.setNextKinematicTranslation(nextPos);
+						player.position.set(nextPos.x, nextPos.y, nextPos.z);
+						syncChunks(player.position.x, player.position.z);
+
+						grounded = drivingMachine ? false : controller.computedGrounded();
+						if (grounded && verticalVelocity < 0) {
+							verticalVelocity = 0;
+						}
+
+						if (drivingMachine) {
+							drivingMachine.group.position.set(nextPos.x, nextPos.y, nextPos.z);
+							drivingMachine.group.rotation.y = player.rotation.y + Math.PI;
+							const turnBank = THREE.MathUtils.clamp(-turnInput * 0.32, -0.35, 0.35);
+							drivingMachine.group.rotation.z = lerp(
+								drivingMachine.group.rotation.z,
+								turnBank,
+								Math.min(1, delta * 6)
+							);
+							const pitchTilt = THREE.MathUtils.clamp(moveInput * 0.08, -0.1, 0.1);
+							drivingMachine.group.rotation.x = lerp(
+								drivingMachine.group.rotation.x,
+								pitchTilt,
+								Math.min(1, delta * 6)
+							);
+							const verticalInput = (input.jump ? 1 : 0) + (input.down ? -1 : 0);
+							const throttle = THREE.MathUtils.clamp(Math.abs(moveInput) + Math.abs(verticalInput) * 0.9, 0, 1);
+							if (throttle > 0.1) {
+								spawnThrusterTrail(drivingMachine, throttle);
+							}
+						}
 					} else {
-						pushHits.add(block);
+						movementStrength = 0;
 					}
-				}
-				const actualMovement = controller.computedMovement();
-				const currentPos = playerBody.translation();
-				const nextPos = {
-					x: currentPos.x + actualMovement.x,
-					y: currentPos.y + actualMovement.y,
-					z: currentPos.z + actualMovement.z
-				};
 
-				playerBody.setNextKinematicTranslation(nextPos);
-				player.position.set(nextPos.x, nextPos.y, nextPos.z);
-				syncChunks(player.position.x, player.position.z);
-
-				grounded = controller.computedGrounded();
-				if (grounded && verticalVelocity < 0) {
-					verticalVelocity = 0;
-				}
-
-				const movementStrength = Math.min(Math.abs(moveInput), 1);
-				const stride = Math.sin(time * 8) * 0.7 * movementStrength;
-				legLeft.rotation.x = stride;
-				legRight.rotation.x = -stride;
-				armLeft.rotation.x = -stride * 0.7;
+					const stride = Math.sin(time * 8) * 0.7 * movementStrength;
+					legLeft.rotation.x = stride;
+					legRight.rotation.x = -stride;
+					armLeft.rotation.x = -stride * 0.7;
 				armRight.rotation.x = stride * 0.7;
 				const bob = Math.abs(Math.sin(time * 8)) * 0.05 * movementStrength;
 				body.position.y = 1.2 + bob;
@@ -5543,75 +6204,146 @@
 							const fluidSurface = Math.max(currentWorld.fluids.waterLevel, currentWorld.fluids.lavaLevel);
 							const desiredY = Math.max(surface, fluidSurface) + 0.25;
 							critter.group.position.y += (desiredY - critter.group.position.y) * Math.min(1, delta * 8);
-						}
-
-						machinerySpawnTimer -= delta;
-						if (machineries.length < machineryMaxActive && machinerySpawnTimer <= 0) {
-							const spawned = spawnMachinery();
-							machinerySpawnTimer = THREE.MathUtils.randFloat(8, 14) + (spawned ? 0 : 2.5);
-						} else if (machineries.length >= machineryMaxActive) {
-							machinerySpawnTimer = Math.max(machinerySpawnTimer, 1);
-						}
-
-						cardSpawnTimer -= delta;
-						if (cards.length < cardsMaxActive && cardSpawnTimer <= 0) {
-							const spawned = spawnCard();
-							cardSpawnTimer = THREE.MathUtils.randFloat(4, 9) + (spawned ? 0 : 2);
-						} else if (cards.length >= cardsMaxActive) {
-							cardSpawnTimer = Math.max(cardSpawnTimer, 1);
-						}
-
-						let nearestMachine: MachineryInstance | null = null;
-						let nearestMachineDist = Number.POSITIVE_INFINITY;
-						const buyRadius = 3.2;
-
-						for (let i = machineries.length - 1; i >= 0; i -= 1) {
-							const machine = machineries[i];
-							machine.life -= delta;
-							if (machine.life <= 0) {
-								scene.remove(machine.group);
-								machineries.splice(i, 1);
-								machinerySpawnTimer = Math.min(machinerySpawnTimer, 3.5);
-								continue;
+							}
+	
+							machinerySpawnTimer -= delta;
+							const roamingMachineryCount = machineries.reduce((count, machine) => count + (machine.isOwned ? 0 : 1), 0);
+							if (roamingMachineryCount < machineryMaxActive && machinerySpawnTimer <= 0) {
+								const spawned = spawnMachinery();
+								machinerySpawnTimer = THREE.MathUtils.randFloat(8, 14) + (spawned ? 0 : 2.5);
+							} else if (roamingMachineryCount >= machineryMaxActive) {
+								machinerySpawnTimer = Math.max(machinerySpawnTimer, 1);
 							}
 
-							machine.targetTimer -= delta;
-							let dx = machine.target.x - machine.group.position.x;
-							let dz = machine.target.y - machine.group.position.z;
-							let distSq = dx * dx + dz * dz;
-							if (machine.targetTimer <= 0 || distSq < 1.2 * 1.2) {
-								pickMachineryTarget(machine, i * 311 + Math.floor(time * 9));
-								dx = machine.target.x - machine.group.position.x;
-								dz = machine.target.y - machine.group.position.z;
-								distSq = dx * dx + dz * dz;
+							cardSpawnTimer -= delta;
+							if (cards.length < cardsMaxActive && cardSpawnTimer <= 0) {
+								const spawned = spawnCard();
+								cardSpawnTimer = THREE.MathUtils.randFloat(4, 9) + (spawned ? 0 : 2);
+							} else if (cards.length >= cardsMaxActive) {
+								cardSpawnTimer = Math.max(cardSpawnTimer, 1);
 							}
 
-							if (distSq > 0.0001) {
-								const dist = Math.sqrt(distSq);
-								const step = machine.speed * delta;
-								const stepScale = Math.min(step / dist, 1);
-								machine.group.position.x += dx * stepScale;
-								machine.group.position.z += dz * stepScale;
-								machine.group.rotation.y = Math.atan2(dx, dz);
-								machine.phase += delta * (1.2 + machine.speed * 0.4);
-							}
+							let nearestMachine: MachineryInstance | null = null;
+							let nearestMachineDist = Number.POSITIVE_INFINITY;
 
-							const mx = Math.round(machine.group.position.x);
-							const mz = Math.round(machine.group.position.z);
-							const surface = getHeightAt(mx, mz);
-							const fluidSurface = Math.max(currentWorld.fluids.waterLevel, currentWorld.fluids.lavaLevel);
-							const bob = Math.sin(time * 2.4 + machine.phase) * 0.08;
-							const desiredY = Math.max(surface, fluidSurface) + machine.hover + bob;
-							machine.group.position.y += (desiredY - machine.group.position.y) * Math.min(1, delta * 6);
+							for (let i = machineries.length - 1; i >= 0; i -= 1) {
+								const machine = machineries[i];
+								if (!machine.isOwned && Number.isFinite(machine.rentalRemaining) && machine.rentalRemaining > 0) {
+									machine.rentalRemaining = Math.max(0, machine.rentalRemaining - delta);
+									if (machine.rentalRemaining <= 0) {
+										if (machine.boarded) {
+											exitVehicle('expired');
+										}
+										removeMachineryInstance(machine);
+										machinerySpawnTimer = Math.min(machinerySpawnTimer, 2.5);
+										continue;
+									}
+								}
 
-							const dxp = player.position.x - machine.group.position.x;
-							const dzp = player.position.z - machine.group.position.z;
-							const dist = Math.hypot(dxp, dzp);
-							if (dist < nearestMachineDist) {
-								nearestMachineDist = dist;
-								nearestMachine = machine;
+								if (!machine.isOwned && machine.rentalRemaining <= 0 && !machine.boarded) {
+									machine.life -= delta;
+									if (machine.life <= 0) {
+										removeMachineryInstance(machine);
+										machinerySpawnTimer = Math.min(machinerySpawnTimer, 3.5);
+										continue;
+									}
+								}
+
+								const canWander = !machine.isOwned && machine.rentalRemaining <= 0 && !machine.boarded;
+								if (canWander) {
+									machine.targetTimer -= delta;
+									let dx = machine.target.x - machine.group.position.x;
+									let dz = machine.target.y - machine.group.position.z;
+									let distSq = dx * dx + dz * dz;
+									if (machine.targetTimer <= 0 || distSq < 1.2 * 1.2) {
+										pickMachineryTarget(machine, i * 311 + Math.floor(time * 9));
+										dx = machine.target.x - machine.group.position.x;
+										dz = machine.target.y - machine.group.position.z;
+										distSq = dx * dx + dz * dz;
+									}
+
+									if (distSq > 0.0001) {
+										const dist = Math.sqrt(distSq);
+										const step = machine.speed * delta;
+										const stepScale = Math.min(step / dist, 1);
+										machine.group.position.x += dx * stepScale;
+										machine.group.position.z += dz * stepScale;
+										machine.group.rotation.y = Math.atan2(dx, dz);
+										machine.phase += delta * (1.2 + machine.speed * 0.4);
+									}
+								} else {
+									machine.phase += delta * 1.2;
+								}
+
+								if (!machine.boarded) {
+									const mx = Math.round(machine.group.position.x);
+									const mz = Math.round(machine.group.position.z);
+									const surface = getHeightAt(mx, mz);
+									const fluidSurface = Math.max(currentWorld.fluids.waterLevel, currentWorld.fluids.lavaLevel);
+									const bob = Math.sin(time * 2.4 + machine.phase) * 0.08;
+									const desiredY = Math.max(surface, fluidSurface) + machine.hover + bob;
+									machine.group.position.y += (desiredY - machine.group.position.y) * Math.min(1, delta * 6);
+									machine.group.rotation.x = lerp(machine.group.rotation.x, 0, Math.min(1, delta * 4));
+									machine.group.rotation.z = lerp(machine.group.rotation.z, 0, Math.min(1, delta * 4));
+								}
+
+								const dxm = machine.group.position.x - machine.lastPos.x;
+								const dzm = machine.group.position.z - machine.lastPos.z;
+								const travel = Math.hypot(dxm, dzm);
+								if (travel > 0.00001) {
+									machine.wheelRoll += travel * 1.9;
+								}
+								machine.lastPos.copy(machine.group.position);
+
+								for (const rotor of machine.parts.rotors) {
+									rotor.rotation.y += delta * 7.5;
+								}
+								for (const gyro of machine.parts.gyros) {
+									gyro.rotation.y += delta * 2.2;
+								}
+								for (const wheel of machine.parts.wheels) {
+									wheel.rotation.x = machine.wheelRoll;
+								}
+								const armSwing = Math.sin(time * 2.6 + machine.phase) * 0.22;
+								for (let p = 0; p < machine.parts.arms.length; p += 1) {
+									const arm = machine.parts.arms[p];
+									if (!arm.userData.baseRotSet) {
+										arm.userData.baseRotSet = true;
+										arm.userData.baseRotX = arm.rotation.x;
+										arm.userData.baseRotY = arm.rotation.y;
+										arm.userData.baseRotZ = arm.rotation.z;
+									}
+									const baseX = (arm.userData.baseRotX as number) ?? 0;
+									const baseZ = (arm.userData.baseRotZ as number) ?? 0;
+									const sign = p % 2 === 0 ? 1 : -1;
+									arm.rotation.x = baseX + armSwing * sign;
+									arm.rotation.z = baseZ + armSwing * sign * 0.65;
+								}
+								const thrusterPulse = 0.65 + Math.sin(time * 8.5 + machine.phase) * 0.35;
+								const moving = travel > 0.002 || machine.boarded;
+								for (const thruster of machine.parts.thrusters) {
+									const glow = thruster.children[0] as THREE.Object3D | undefined;
+									if (!glow) continue;
+									if (!glow.userData.baseScaleZ) {
+										glow.userData.baseScaleX = glow.scale.x;
+										glow.userData.baseScaleY = glow.scale.y;
+										glow.userData.baseScaleZ = glow.scale.z;
+									}
+									const baseZ = (glow.userData.baseScaleZ as number) ?? glow.scale.z;
+									const boost = moving ? 1 : 0.45;
+									glow.scale.z = baseZ * (0.85 + thrusterPulse * 0.95 * boost);
+								}
+
+								if (!activeMachine) {
+									const dxp = player.position.x - machine.group.position.x;
+									const dzp = player.position.z - machine.group.position.z;
+									const dist = Math.hypot(dxp, dzp);
+									if (dist < nearestMachineDist) {
+										nearestMachineDist = dist;
+										nearestMachine = machine;
+									}
+								}
 							}
-						}
 
 						for (let i = cards.length - 1; i >= 0; i -= 1) {
 							const card = cards[i];
@@ -5632,45 +6364,93 @@
 							if (dxp * dxp + dzp * dzp <= 1.45 * 1.45) {
 								collectCard(card);
 							}
-						}
-
-						let nextHint: string | null = null;
-						let nextAction: string | null = null;
-						if (nearestMachine && nearestMachineDist <= buyRadius) {
-							const cost = getMachineryCost(nearestMachine.def.id);
-							const rarityLabel = RARITY_LABEL[nearestMachine.def.rarity];
-							if (crypto >= cost) {
-								nextHint = `Press E to buy ${nearestMachine.def.name} (${rarityLabel}) for ${cost} SC`;
-								nextAction = 'Buy';
-							} else {
-								nextHint = `${nearestMachine.def.name} (${rarityLabel}) costs ${cost} SC. You have ${crypto} SC.`;
 							}
-						}
-						if (interactionHint !== nextHint) interactionHint = nextHint;
-						if (interactionActionLabel !== nextAction) interactionActionLabel = nextAction;
 
-						if (interactRequested) {
-							interactRequested = false;
-							if (nearestMachine && nearestMachineDist <= buyRadius) {
-								const purchased = purchaseMachinery(nearestMachine);
-								if (purchased) {
-									interactionHint = null;
-									interactionActionLabel = null;
+							let nextHint: string | null = null;
+							let nextAction: string | null = null;
+							let nextAltAction: string | null = null;
+
+							if (activeMachine) {
+								const machine = activeMachine;
+								const purchaseCost = getMachineryCost(machine.def.id);
+								if (machine.isOwned) {
+									nextHint = `${machine.def.name} (owned). Press F to disembark.`;
+								} else if (Number.isFinite(machine.rentalRemaining) && machine.rentalRemaining > 0) {
+									nextHint = `${machine.def.name} rental: ${formatClock(machine.rentalRemaining)} left. Press E to extend (+${machine.rentalDuration}s) for ${machine.rentalCost} SC. Press F to disembark.`;
+									nextAction = crypto >= machine.rentalCost ? 'Extend' : null;
+									nextAltAction = crypto >= purchaseCost ? 'Buy' : null;
+								} else {
+									nextHint = `${machine.def.name}. Press F to disembark.`;
 								}
-							} else {
-								showToast('No machinery close enough to buy.', 'warn');
+							} else if (nearestMachine && nearestMachineDist <= nearestMachine.parts.interactRadius) {
+								const machine = nearestMachine;
+								const purchaseCost = getMachineryCost(machine.def.id);
+								const rarityLabel = RARITY_LABEL[machine.def.rarity];
+								if (machine.isOwned) {
+									nextHint = `Press E to board ${machine.def.name} (${rarityLabel}).`;
+									nextAction = 'Board';
+								} else if (machine.rentalRemaining > 0) {
+									nextHint = `Press E to board ${machine.def.name} (${rarityLabel}). Rental: ${formatClock(machine.rentalRemaining)} left.`;
+									nextAction = 'Board';
+									nextAltAction = crypto >= purchaseCost ? 'Buy' : null;
+								} else {
+									const canRent = crypto >= machine.rentalCost;
+									const canBuy = crypto >= purchaseCost;
+									nextHint = `Press E to rent ${machine.def.name} (${rarityLabel}) for ${machine.rentalCost} SC (${machine.rentalDuration}s). Press B to buy for ${purchaseCost} SC.`;
+									nextAction = canRent ? 'Rent' : null;
+									nextAltAction = canBuy ? 'Buy' : null;
+									if (!canRent && !canBuy) {
+										nextHint = `${machine.def.name} (${rarityLabel}) rent ${machine.rentalCost} SC / buy ${purchaseCost} SC. You have ${crypto} SC.`;
+									} else if (!canRent) {
+										nextHint = `${machine.def.name} (${rarityLabel}) rent ${machine.rentalCost} SC (need ${machine.rentalCost - crypto} more). Press B to buy for ${purchaseCost} SC.`;
+									} else if (!canBuy) {
+										nextHint = `Press E to rent ${machine.def.name} (${rarityLabel}) for ${machine.rentalCost} SC (${machine.rentalDuration}s). Buy costs ${purchaseCost} SC.`;
+									}
+								}
 							}
-						}
-					}
+							if (interactionHint !== nextHint) interactionHint = nextHint;
+							if (interactionActionLabel !== nextAction) interactionActionLabel = nextAction;
+							if (interactionAltActionLabel !== nextAltAction) interactionAltActionLabel = nextAltAction;
 
-					cameraRig.position.copy(player.position);
-					cameraRig.rotation.y = player.rotation.y;
-					cameraRig.updateMatrixWorld();
+							if (interactRequested) {
+								interactRequested = false;
+								if (activeMachine) {
+									extendRental(activeMachine);
+								} else if (nearestMachine && nearestMachineDist <= nearestMachine.parts.interactRadius) {
+									if (nearestMachine.isOwned || nearestMachine.rentalRemaining > 0 || beginRental(nearestMachine)) {
+										enterVehicle(nearestMachine);
+									}
+								} else {
+									showToast('No machinery close enough.', 'warn');
+								}
+							}
 
-					const walkBob = Math.sin(time * 8) * 0.04 * movementStrength;
-					camera.position.set(0, playerEyeHeight + walkBob, 0);
-					camera.rotation.set(cameraPitch, 0, 0);
-					camera.updateMatrixWorld();
+								if (altInteractRequested) {
+									altInteractRequested = false;
+									if (activeMachine) {
+										purchaseMachinery(activeMachine);
+									} else if (nearestMachine && nearestMachineDist <= nearestMachine.parts.interactRadius) {
+										purchaseMachinery(nearestMachine);
+									} else {
+										showToast('No machinery close enough.', 'warn');
+									}
+								}
+
+								if (canDisembark !== Boolean(activeMachine)) {
+									canDisembark = Boolean(activeMachine);
+								}
+							}
+
+						cameraRig.position.copy(player.position);
+						cameraRig.rotation.y = player.rotation.y;
+						cameraRig.updateMatrixWorld();
+
+						const walkBob = Math.sin(time * 8) * 0.04 * movementStrength;
+						const rideBob = activeMachine ? Math.sin(time * 5 + activeMachine.phase) * 0.03 * movementStrength : walkBob;
+						const cameraY = activeMachine ? activeMachine.parts.seatHeight + rideBob : playerEyeHeight + walkBob;
+						camera.position.set(0, cameraY, 0);
+						camera.rotation.set(cameraPitch, 0, 0);
+						camera.updateMatrixWorld();
 
 					viewEuler.set(cameraPitch, player.rotation.y, 0);
 					viewDir.copy(forwardBase).applyEuler(viewEuler);
@@ -5931,20 +6711,31 @@
 					}
 				}
 
-				for (let i = portalParticles.length - 1; i >= 0; i -= 1) {
-					const particle = portalParticles[i];
-					particle.velocity.y += gravity * 0.15 * delta;
-					particle.mesh.position.addScaledVector(particle.velocity, delta);
-					particle.life -= delta;
-					if (particle.life <= 0) {
-						scene.remove(particle.mesh);
-						portalParticles.splice(i, 1);
+					for (let i = portalParticles.length - 1; i >= 0; i -= 1) {
+						const particle = portalParticles[i];
+						particle.velocity.y += gravity * 0.15 * delta;
+						particle.mesh.position.addScaledVector(particle.velocity, delta);
+						particle.life -= delta;
+						if (particle.life <= 0) {
+							scene.remove(particle.mesh);
+							portalParticles.splice(i, 1);
+						}
 					}
-				}
 
-				for (let i = pendingDetonations.length - 1; i >= 0; i -= 1) {
-					const pending = pendingDetonations[i];
-					pending.time -= delta;
+					for (let i = vehicleParticles.length - 1; i >= 0; i -= 1) {
+						const particle = vehicleParticles[i];
+						particle.velocity.y += gravity * 0.05 * delta;
+						particle.mesh.position.addScaledVector(particle.velocity, delta);
+						particle.life -= delta;
+						if (particle.life <= 0) {
+							scene.remove(particle.mesh);
+							vehicleParticles.splice(i, 1);
+						}
+					}
+
+					for (let i = pendingDetonations.length - 1; i >= 0; i -= 1) {
+						const pending = pendingDetonations[i];
+						pending.time -= delta;
 					if (pending.time > 0) {
 						continue;
 					}
@@ -5987,23 +6778,31 @@
 				joystickEl?.removeEventListener('pointermove', handleJoystickMove);
 				joystickEl?.removeEventListener('pointerup', handleJoystickUp);
 				joystickEl?.removeEventListener('pointercancel', handleJoystickUp);
-				jumpEl?.removeEventListener('pointerdown', handleJumpDown);
-				jumpEl?.removeEventListener('pointerup', handleJumpUp);
-				jumpEl?.removeEventListener('pointercancel', handleJumpUp);
-				renderer.domElement.removeEventListener('pointerdown', handleLookDown);
-				renderer.domElement.removeEventListener('pointermove', handleLookMove);
-				renderer.domElement.removeEventListener('pointerup', handleLookUp);
-				renderer.domElement.removeEventListener('pointercancel', handleLookUp);
+					jumpEl?.removeEventListener('pointerdown', handleJumpDown);
+					jumpEl?.removeEventListener('pointerup', handleJumpUp);
+					jumpEl?.removeEventListener('pointercancel', handleJumpUp);
+					downEl?.removeEventListener('pointerdown', handleDownDown);
+					downEl?.removeEventListener('pointerup', handleDownUp);
+					downEl?.removeEventListener('pointercancel', handleDownUp);
+					renderer.domElement.removeEventListener('pointerdown', handleLookDown);
+					renderer.domElement.removeEventListener('pointermove', handleLookMove);
+					renderer.domElement.removeEventListener('pointerup', handleLookUp);
+					renderer.domElement.removeEventListener('pointercancel', handleLookUp);
 				container?.removeChild(renderer.domElement);
 				worldJump = null;
 				if (toastTimeout) {
 					clearTimeout(toastTimeout);
 					toastTimeout = null;
 				}
-				hudToast = null;
-				interactionHint = null;
-				interactionActionLabel = null;
-				interactRequested = false;
+					hudToast = null;
+					interactionHint = null;
+					interactionActionLabel = null;
+					interactionAltActionLabel = null;
+					canDisembark = false;
+					interactRequested = false;
+					altInteractRequested = false;
+					disembarkRequested = false;
+					deployMachinery = null;
 
 						blockGeo.dispose();
 						fallingBlockGeo.dispose();
@@ -6058,12 +6857,16 @@
 				portalFrameMat.dispose();
 				tntTopMat.dispose();
 				tntSideMat.dispose();
-				tntBottomMat.dispose();
-				particleMat.dispose();
-				portalParticleMat.dispose();
-				for (const mat of breakParticleMats.values()) {
-					mat.dispose();
-				}
+					tntBottomMat.dispose();
+					particleMat.dispose();
+					portalParticleMat.dispose();
+					for (const mat of vehicleParticleMats.values()) {
+						mat.dispose();
+					}
+					vehicleParticleMats.clear();
+					for (const mat of breakParticleMats.values()) {
+						mat.dispose();
+					}
 				breakParticleMats.clear();
 				grassTopTex.dispose();
 				grassSideTex.dispose();
@@ -6160,15 +6963,19 @@
 					scene.remove(block.mesh);
 					world.removeRigidBody(block.body);
 				}
-				for (const particle of particles) {
-					scene.remove(particle.mesh);
-				}
-				for (const particle of portalParticles) {
-					scene.remove(particle.mesh);
-				}
-				pendingDetonations.length = 0;
-				world.removeRigidBody(playerBody);
-				world.removeCharacterController(controller);
+					for (const particle of particles) {
+						scene.remove(particle.mesh);
+					}
+					for (const particle of portalParticles) {
+						scene.remove(particle.mesh);
+					}
+					for (const particle of vehicleParticles) {
+						scene.remove(particle.mesh);
+					}
+					vehicleParticles.length = 0;
+					pendingDetonations.length = 0;
+					world.removeRigidBody(playerBody);
+					world.removeCharacterController(controller);
 
 				for (const audio of bgmCache.values()) {
 					audio.pause();
@@ -6213,15 +7020,23 @@
 					<div class="collection-section">
 						<div class="collection-title">Machinery</div>
 						{#each MACHINERY_CATALOG as item (item.id)}
-							{#if getOwnedMachineryCount(item.id) > 0}
-								<div class="collection-row">
-									<div class="collection-name">{item.name}</div>
-									<div class="collection-meta">
-										<span class="collection-rarity">{RARITY_LABEL[item.rarity]}</span>
-										<span class="collection-count">x{getOwnedMachineryCount(item.id)}</span>
+								{#if getOwnedMachineryCount(item.id) > 0}
+									<div class="collection-row">
+										<div class="collection-name">{item.name}</div>
+										<div class="collection-meta">
+											<span class="collection-rarity">{RARITY_LABEL[item.rarity]}</span>
+											<span class="collection-count">x{getOwnedMachineryCount(item.id)}</span>
+											<button
+												type="button"
+												class="collection-action"
+												disabled={!deployMachinery}
+												on:click={() => deployOwned(item.id)}
+											>
+												Deploy
+											</button>
+										</div>
 									</div>
-								</div>
-							{/if}
+								{/if}
 						{/each}
 						{#if !MACHINERY_CATALOG.some((entry) => getOwnedMachineryCount(entry.id) > 0)}
 							<div class="collection-empty">No machinery yet. Catch and buy wandering machinery.</div>
@@ -6304,22 +7119,29 @@
 						</div>
 					</details>
 				{/if}
-				<p>Walk into a portal to swap worlds. W / A / S / D or Arrow keys. Click the world to capture the mouse (Esc to release), then move to look. Space to jump. Hold left click (or touch and hold) to mine the highlighted block and collect it into your hotbar. Right click to place the selected hotbar block (keys 1-9). Press E near wandering machinery to buy it with SC. Explore to find collectible tickets.</p>
+					<p>Walk into a portal to swap worlds. W / A / S / D or Arrow keys. Click the world to capture the mouse (Esc to release), then move to look. Space to jump (ascend in vehicles), Shift/Ctrl to descend in vehicles. Hold left click (or touch and hold) to mine the highlighted block and collect it into your hotbar. Right click to place the selected hotbar block (keys 1-9). Press E near machinery to rent/board it, B to buy it, and F to disembark. Explore to find collectible tickets.</p>
 			</div>
 			<div class="scene" bind:this={container}></div>
 			{#if hudToast}
 				<div class="toast" class:warn={hudToast.tone === 'warn'} class:error={hudToast.tone === 'error'}>
 					{hudToast.text}
 				</div>
-			{/if}
-			{#if interactionHint}
-				<div class="interaction">
-					<div class="interaction-text">{interactionHint}</div>
-					{#if interactionActionLabel}
-						<button type="button" on:click={requestInteract}>{interactionActionLabel}</button>
-					{/if}
-				</div>
-			{/if}
+				{/if}
+				{#if interactionHint}
+					<div class="interaction">
+						<div class="interaction-text">{interactionHint}</div>
+						{#if interactionActionLabel || interactionAltActionLabel}
+							<div class="interaction-actions">
+								{#if interactionActionLabel}
+									<button type="button" on:click={requestInteract}>{interactionActionLabel}</button>
+								{/if}
+								{#if interactionAltActionLabel}
+									<button type="button" class="alt" on:click={requestAltInteract}>{interactionAltActionLabel}</button>
+								{/if}
+							</div>
+						{/if}
+					</div>
+				{/if}
 			<div class="crosshair" aria-hidden="true"></div>
 			<div class="hotbar" aria-label="Backpack">
 			{#each hotbar as slot, idx}
@@ -6334,19 +7156,30 @@
 					{/if}
 				</div>
 			{/each}
-		</div>
-		<div class="touch-controls">
-			<div class="touch-pad joystick" bind:this={joystickEl}>
-				<div class="thumb" bind:this={joystickThumbEl}></div>
 			</div>
-			<div class="touch-pad jump" bind:this={jumpEl}>Jump</div>
-			{#if interactionActionLabel}
-				<button type="button" class="touch-pad interact" on:pointerdown|preventDefault={() => requestInteract()}>
-					{interactionActionLabel}
-				</button>
-			{/if}
+			<div class="touch-controls">
+				<div class="touch-pad joystick" bind:this={joystickEl}>
+					<div class="thumb" bind:this={joystickThumbEl}></div>
+				</div>
+				<div class="touch-pad jump" bind:this={jumpEl}>Jump</div>
+				<div class="touch-pad down" bind:this={downEl}>Down</div>
+				{#if interactionActionLabel}
+					<button type="button" class="touch-pad interact" on:pointerdown|preventDefault={() => requestInteract()}>
+						{interactionActionLabel}
+					</button>
+				{/if}
+				{#if interactionAltActionLabel}
+					<button type="button" class="touch-pad interact alt" on:pointerdown|preventDefault={() => requestAltInteract()}>
+						{interactionAltActionLabel}
+					</button>
+				{/if}
+				{#if canDisembark}
+					<button type="button" class="touch-pad exit" on:pointerdown|preventDefault={() => requestDisembark()}>
+						Exit
+					</button>
+				{/if}
+			</div>
 		</div>
-	</div>
 
 <style>
 	:global(html, body) {
@@ -6522,15 +7355,38 @@
 			color: rgba(183, 241, 255, 0.78);
 		}
 
-		.collection-count {
-			font-weight: 600;
-			color: rgba(249, 209, 140, 0.9);
-		}
+			.collection-count {
+				font-weight: 600;
+				color: rgba(249, 209, 140, 0.9);
+			}
 
-		.collection-empty {
-			font-size: 12px;
-			opacity: 0.75;
-		}
+			.collection-action {
+				appearance: none;
+				border: 1px solid rgba(143, 177, 185, 0.35);
+				background: rgba(18, 26, 32, 0.62);
+				color: rgba(232, 243, 246, 0.9);
+				border-radius: 999px;
+				padding: 4px 8px;
+				font-size: 10px;
+				letter-spacing: 0.12em;
+				text-transform: uppercase;
+				cursor: pointer;
+			}
+
+			.collection-action:hover:not(:disabled) {
+				background: rgba(26, 38, 46, 0.72);
+				border-color: rgba(183, 241, 255, 0.35);
+			}
+
+			.collection-action:disabled {
+				opacity: 0.45;
+				cursor: default;
+			}
+
+			.collection-empty {
+				font-size: 12px;
+				opacity: 0.75;
+			}
 
 		.debug-camera {
 			margin-top: 10px;
@@ -6747,17 +7603,22 @@
 		pointer-events: none;
 	}
 
-	.interaction-text {
-		font-size: 12px;
-		color: rgba(232, 243, 246, 0.9);
-		letter-spacing: 0.06em;
-	}
+		.interaction-text {
+			font-size: 12px;
+			color: rgba(232, 243, 246, 0.9);
+			letter-spacing: 0.06em;
+		}
 
-	.interaction button {
-		pointer-events: auto;
-		appearance: none;
-		border: 1px solid rgba(249, 209, 140, 0.7);
-		background: rgba(249, 209, 140, 0.12);
+		.interaction-actions {
+			display: flex;
+			gap: 8px;
+		}
+
+		.interaction button {
+			pointer-events: auto;
+			appearance: none;
+			border: 1px solid rgba(249, 209, 140, 0.7);
+			background: rgba(249, 209, 140, 0.12);
 		color: rgba(255, 250, 242, 0.95);
 		border-radius: 999px;
 		padding: 8px 12px;
@@ -6767,14 +7628,24 @@
 		cursor: pointer;
 	}
 
-	.interaction button:hover {
-		background: rgba(249, 209, 140, 0.18);
-	}
+		.interaction button:hover {
+			background: rgba(249, 209, 140, 0.18);
+		}
 
-	.touch-pad {
-		appearance: none;
-		position: absolute;
-		width: 96px;
+		.interaction button.alt {
+			border-color: rgba(183, 241, 255, 0.55);
+			background: rgba(183, 241, 255, 0.12);
+			color: rgba(232, 243, 246, 0.92);
+		}
+
+		.interaction button.alt:hover {
+			background: rgba(183, 241, 255, 0.18);
+		}
+
+		.touch-pad {
+			appearance: none;
+			position: absolute;
+			width: 96px;
 		height: 96px;
 		border-radius: 999px;
 		border: 1px solid rgba(143, 177, 185, 0.35);
@@ -6796,18 +7667,41 @@
 		bottom: calc(18px + env(safe-area-inset-bottom));
 	}
 
-	.touch-pad.jump {
-		right: calc(18px + env(safe-area-inset-right));
-		bottom: calc(18px + env(safe-area-inset-bottom));
-	}
+		.touch-pad.jump {
+			right: calc(18px + env(safe-area-inset-right));
+			bottom: calc(18px + env(safe-area-inset-bottom));
+		}
 
-	.touch-pad.interact {
-		right: calc(18px + env(safe-area-inset-right));
-		bottom: calc(122px + env(safe-area-inset-bottom));
-		width: 110px;
-		height: 64px;
-		border-radius: 18px;
-	}
+		.touch-pad.down {
+			right: calc(124px + env(safe-area-inset-right));
+			bottom: calc(18px + env(safe-area-inset-bottom));
+		}
+
+		.touch-pad.interact {
+			right: calc(18px + env(safe-area-inset-right));
+			bottom: calc(122px + env(safe-area-inset-bottom));
+			width: 110px;
+			height: 64px;
+			border-radius: 18px;
+		}
+
+		.touch-pad.interact.alt {
+			bottom: calc(196px + env(safe-area-inset-bottom));
+			border-color: rgba(183, 241, 255, 0.55);
+			background: rgba(183, 241, 255, 0.08);
+			color: rgba(232, 243, 246, 0.9);
+		}
+
+		.touch-pad.exit {
+			right: calc(18px + env(safe-area-inset-right));
+			bottom: calc(270px + env(safe-area-inset-bottom));
+			width: 92px;
+			height: 56px;
+			border-radius: 18px;
+			border-color: rgba(255, 141, 126, 0.55);
+			background: rgba(255, 100, 90, 0.08);
+			color: rgba(255, 221, 214, 0.92);
+		}
 
 	
 	.touch-pad .thumb {
